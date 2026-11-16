@@ -1,6 +1,12 @@
 # TrustModel Review Action
 
+[![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-Trust%20Review%20Action-blue?logo=github)](https://github.com/marketplace/actions/trustmodel-review)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/github/v/release/pdxlab/trustmodel-review-action)](https://github.com/pdxlab/trustmodel-review-action/releases)
+
 > The AI trust gate for your CI/CD — a 10-dimension TrustScore review on every PR that touches AI.
+>
+> **[→ View on GitHub Marketplace](https://github.com/marketplace/actions/trustmodel-review)**
 
 Add two lines to your GitHub Actions workflow and every PR that changes a prompt, model config, or agent code gets a **TrustScore review comment** and a **required status check** that can block merge if trust regresses.
 
