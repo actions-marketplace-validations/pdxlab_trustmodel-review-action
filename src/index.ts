@@ -13,7 +13,6 @@ async function run(): Promise<void> {
       return;
     }
 
-    // The GitHub Actions SDK types payload.pull_request loosely — cast to what we need.
     const pr = ctx.payload.pull_request as {
       number: number;
       base: { sha: string };
@@ -35,6 +34,9 @@ async function run(): Promise<void> {
       baseUrl:           core.getInput('base_url') || 'https://api.trustmodel.ai',
     });
 
+    const octokit = github.getOctokit(process.env.GITHUB_TOKEN!);
+    const repo    = `${ctx.repo.owner}/${ctx.repo.repo}`;
+
     // 1. Detect which AI-related files changed in this PR.
     const changedFiles = await detectAiChanges({
       baseSha: pr.base.sha,
@@ -43,7 +45,16 @@ async function run(): Promise<void> {
     });
 
     if (changedFiles.length === 0) {
-      core.info('No AI-related files changed — Trust Review skipped.');
+      // No AI files touched — set a green status check and exit cleanly.
+      // Do NOT fail the action step; this is not an error.
+      core.info('No AI-related files changed — Trust Review skipped (green).');
+      await octokit.rest.repos.createCommitStatus({
+        owner: ctx.repo.owner, repo: ctx.repo.repo, sha: pr.head.sha,
+        state:       'success',
+        context:     'trustmodel/trust-review',
+        description: 'TR: No AI-related files changed — skipped',
+        target_url:  'https://app.trustmodel.ai',
+      });
       core.setOutput('passed', 'true');
       core.setOutput('trust_score', '');
       return;
@@ -52,26 +63,51 @@ async function run(): Promise<void> {
     core.info(`AI-related files changed (${changedFiles.length}): ${changedFiles.join(', ')}`);
 
     // 2. Run TrustModel eval against the changed assets.
-    const repo = `${ctx.repo.owner}/${ctx.repo.repo}`;
     const result: EvalResult = await runEval({
       cfg, changedFiles,
       baseSha: pr.base.sha, headSha: pr.head.sha,
       repo, prNumber: pr.number,
     });
 
+    core.info(`Eval result: trustScore=${result.trustScore} grade=${result.grade} free=${result.free}`);
+
     // 3. Post the Trust Review comment.
-    const octokit = github.getOctokit(process.env.GITHUB_TOKEN!);
     await postReviewComment({ octokit, ctx, prNumber: pr.number, headSha: pr.head.sha, result, cfg });
 
     // 4. Set the trustmodel/trust-review commit status check.
-    const passed = computePass(result, cfg);
+    //
+    //    Three states:
+    //    a) Free/preliminary (no API key) or score unavailable → "pending" (yellow).
+    //       Never show a red failure when scoring hasn't happened — that would
+    //       be a false negative and block merges unfairly.
+    //    b) Scored and passed → "success" (green).
+    //    c) Scored and failed (score below threshold or critical regression) → "failure" (red).
+    //
+    //    The action step itself only calls core.setFailed() for case (c) so
+    //    there is exactly ONE red signal per PR, not two.
+
+    const noScore  = result.trustScore === 0 && result.free;
+    const passed   = !noScore && computePass(result, cfg);
+
+    let checkState: 'success' | 'failure' | 'pending';
+    let checkDesc:  string;
+
+    if (noScore || result.free) {
+      checkState = 'pending';
+      checkDesc  = 'TR: Scoring pending — add TRUSTMODEL_API_KEY for a full 0–100 evaluation';
+    } else if (passed) {
+      checkState = 'success';
+      checkDesc  = `TR: TrustScore ${result.trustScore}/100 (${result.grade}) — passed ✓`;
+    } else {
+      checkState = 'failure';
+      checkDesc  = `TR: TrustScore ${result.trustScore}/100 (${result.grade}) — failed ✗`;
+    }
+
     await octokit.rest.repos.createCommitStatus({
-      owner: ctx.repo.owner,
-      repo:  ctx.repo.repo,
-      sha:   pr.head.sha,
-      state:       passed ? 'success' : 'failure',
-      context:     'trustmodel/trust-review',
-      description: `TR: TrustScore ${result.trustScore}/100 (${result.grade}) — ${passed ? 'passed ✓' : 'failed ✗'}`,
+      owner: ctx.repo.owner, repo: ctx.repo.repo, sha: pr.head.sha,
+      state:      checkState,
+      context:    'trustmodel/trust-review',
+      description: checkDesc,
       target_url:  result.reportUrl ?? 'https://app.trustmodel.ai',
     });
 
@@ -81,7 +117,9 @@ async function run(): Promise<void> {
     core.setOutput('passed',           String(passed));
     core.setOutput('report_url',       result.reportUrl ?? '');
 
-    if (!passed) {
+    // Only fail the action STEP (which creates a second red UI mark) when we
+    // have a real scored failure — never for "pending/no score" state.
+    if (checkState === 'failure') {
       core.setFailed(
         `Trust Review failed — TrustScore ${result.trustScore}/100 (threshold ${cfg.threshold}). ` +
         `No deploy without a passing TR. See ${result.reportUrl ?? 'https://app.trustmodel.ai'}`

@@ -41,12 +41,15 @@ export async function postReviewComment({
   lines.push('');
 
   if (result.free) {
-    lines.push('> **Free preliminary scan** — no API key detected.');
-    lines.push('> Add `TRUSTMODEL_API_KEY` to your repository secrets for the full 10-dimension');
-    lines.push('> breakdown: per-dimension diff, compliance framework mapping (NIST AI RMF,');
-    lines.push('> EU AI Act, EEOC…), critical-dimension regression blocking, and optional AgentCert.');
+    lines.push('> ⏳ **Scoring pending** — no `TRUSTMODEL_API_KEY` detected.');
+    lines.push('> This change was recorded and will appear in the TrustModel console,');
+    lines.push('> but the 0–100 TrustScore hasn\'t been calculated yet. The status check');
+    lines.push('> is set to **pending** (yellow), not failed — it won\'t block your merge.');
     lines.push('>');
-    lines.push('> [⬆️ Upgrade to full Trust Review →](https://app.trustmodel.ai)  &nbsp;  [Get API key →](https://app.trustmodel.ai/keys)');
+    lines.push('> Add `TRUSTMODEL_API_KEY` to your repo secrets for the full scored evaluation:');
+    lines.push('> per-dimension diff, compliance mapping, critical-dimension regression blocking.');
+    lines.push('>');
+    lines.push('> [Get API key →](https://app.trustmodel.ai/keys)  &nbsp;  [Learn more →](https://trustmodel.ai/trust-review-action)');
     lines.push('');
   } else if (result.dimensionDeltas && result.dimensionDeltas.length > 0) {
     lines.push('| Dimension | Before | After | Change |');
