@@ -1,6 +1,12 @@
 # Trust Review Action — metadata preview
 
+[![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-Trust%20Review%20Action-blue?logo=github)](https://github.com/marketplace/actions/trustmodel-review)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![Version](https://img.shields.io/github/v/release/pdxlab/trustmodel-review-action)](https://github.com/pdxlab/trustmodel-review-action/releases)
+
 **The PR diff evaluator is not available. This preview cannot pass a merge gate.**
+
+[View on GitHub Marketplace](https://github.com/marketplace/actions/trustmodel-review)
 
 The Action detects matching changed **file paths** and, when an API key is
 configured, records metadata through `POST /v1/pr-trust/review/`. It never reads
