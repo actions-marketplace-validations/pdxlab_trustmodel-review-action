@@ -1,5 +1,5 @@
 import * as github from '@actions/github';
-import { EvalResult, verifiedPass } from './eval';
+import { EvalResult, verifiedPass, commitState } from './eval';
 import { WebsiteResult, websiteComment } from './website';
 export const MARKER = '<!-- trustmodel-trust-review -->';
 type Octokit = ReturnType<typeof github.getOctokit>;
@@ -8,7 +8,7 @@ function prComment(result: EvalResult): string {
   if (!result.prDiffEvaluated) return [
     MARKER, '## Trust Review — not available', '',
     'The PR diff evaluator is not available. **No code was evaluated and no passing gate was issued.**', '',
-    'The PR result is independent of any informational website assessment below. Full PR-diff evaluation must ship before this can be a required merge gate.',
+    'Full PR-diff evaluation must ship before this can be a required merge gate.',
   ].join('\n');
   return [MARKER, `## Trust Review — ${verifiedPass(result) ? 'passed' : 'not passed'}`, '',
           `PR diff evaluated: yes. Score: ${result.trustScore ?? 'unscored'}/100.`,
@@ -23,13 +23,15 @@ export async function publishResult(opts: { octokit: Octokit; owner: string; rep
   const { octokit, owner, repo, prNumber, headSha, result } = opts;
   // Publish the gate first. A comment failure can never suppress commit status.
   await octokit.rest.repos.createCommitStatus({ owner, repo, sha: headSha,
-    state: verifiedPass(result) ? 'success' : result.prDiffEvaluated && result.status === 'failed' ? 'failure' : 'error',
+    state: commitState(result),
     context: 'trustmodel/trust-review',
-    description: result.status === 'not_available' ? 'Not available: PR diff evaluator has not shipped' :
+    description: result.status === 'skipped' ? 'TR: No AI-related files changed — skipped' :
+                 result.status === 'not_available' ? 'TR: Evaluation unavailable; no passing gate issued' :
                  result.status === 'error' ? 'Trust Review service error; no passing gate issued' :
                  verifiedPass(result) ? 'Verified PR diff evaluation passed' : 'PR diff evaluation did not pass',
     ...(result.reportUrl ? { target_url: result.reportUrl } : {}),
   });
+  if (result.status === 'skipped') return; // Quiet non-AI skip: no comment or website scan.
   const current = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
   if (current.data.head.sha !== headSha) return; // an older push cannot replace the current PR comment
   let commentId: number | undefined;

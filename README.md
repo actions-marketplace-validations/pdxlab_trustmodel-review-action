@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/github/v/release/pdxlab/trustmodel-review-action)](https://github.com/pdxlab/trustmodel-review-action/releases)
 
-**The PR diff evaluator is not available. This preview cannot pass a merge gate.**
+**The PR diff evaluator is not available. This preview cannot pass an AI evaluation gate.**
 
 [View on GitHub Marketplace](https://github.com/marketplace/actions/trustmodel-review)
 
@@ -41,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           ref: ${{ github.event.pull_request.head.sha }}
@@ -58,10 +58,10 @@ The optional `github_token` input defaults to `${{ github.token }}`.
 
 **Expected result:** `status=not_available`, `passed=false`,
 `pr_diff_evaluated=false`, no score. The Action posts an explicit not-available
-comment and an **error** state for `trustmodel/trust-review`, then fails its job
-with that availability message. Do not require this preview check for merging.
-Even an empty matching-path list cannot become a passing skip. Without an API
-key, the Action reports not available without calling the PR evaluation API.
+comment and a **pending** state for `trustmodel/trust-review`; its Action job
+completes without a second red mark. Pending checks still block merges if made
+required, so keep this preview optional. Without an API key, the Action reports
+not available without calling the PR evaluation API or claiming a dashboard record.
 An explicitly configured informational website scan is independent of this.
 
 Only a future response explicitly containing `status=passed`, `passed=true`,
@@ -87,6 +87,38 @@ evals, chains, and tools; those broad matches transmit names only. An optional
 previous `block_on_regression` and `cert_on_pass` inputs are not supported by this
 preview; no regression evaluation or certificate is claimed.
 
+## Skip, status, and diagnostics
+
+| Situation | Commit status | Action job | Evaluation outputs |
+|---|---|---|---|
+| No matching AI paths | success (explicit skip), no comment | succeeds | `status=skipped`, `passed=false`, `pr_diff_evaluated=false` |
+| AI paths, evaluator/key unavailable | pending | succeeds | `status=not_available`, `passed=false` |
+| Verified evaluation passes | success | succeeds | `passed=true`, `pr_diff_evaluated=true` |
+| Verified evaluation fails | failure | succeeds; commit status is the gate | `passed=false` |
+| Wrong key, service/transport/validation error | error | succeeds after publishing the error status | `status=error`, `passed=false` |
+| Cannot publish a GitHub result | no reliable new status | fails | never grants a pass |
+
+A non-AI skip performs no metadata submission or website scan. A detection error
+cannot become a skip. The local CLI uses the same statuses, returning 0 for a
+skip/verified pass, 2 for unavailable/failed evaluation, and 3 for setup/API errors.
+The green Action job alone is not evaluation evidence: use `passed` or the
+`trustmodel/trust-review` commit status. Keep the preview optional.
+
+One `Trust Review response:` log summarizes validated status, evidence, score,
+and a valid run ID (or HTTP error code). It never logs raw upstream responses,
+source content, API keys, or GitHub tokens.
+
+## Release after merge
+
+Run `gh workflow run release.yml --ref main` after this PR merges. The main-only
+workflow repeats tests, checks the committed bundle, releases **v1.0.2**, and
+updates **v1** to the exact tested commit with a protective lease. It refuses
+to reuse a version tag that belongs to a different commit. See [release notes](RELEASE_NOTES.md).
+
+The app's Install Action buttons open this repository, and its example uses
+`@v1`. The new behavior therefore reaches those users only after the release/tag
+update. A PR branch or merge by itself does not update Marketplace consumers.
+
 ## Optional website TrustScore (informational only)
 
 A website score can be useful context, but it does not assess this PR's code.
@@ -108,7 +140,7 @@ TrustScore — informational** section, explicitly identifying the domain.
 Website results use separate `website_domain`, `website_scan_status`, and
 `website_trust_score` outputs. They never populate the PR `trust_score`, change
 its threshold/status, or make the Action pass. A 100/100 website score still
-leaves an unavailable PR evaluator as an error. A website outage never changes
+leaves an unavailable PR evaluator pending with `passed=false`. A website outage never changes
 an otherwise verified PR result. This is independently requested information,
 not a fallback when PR evaluation fails. Blank `website_domain` disables it.
 

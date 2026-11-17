@@ -10,7 +10,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 def main():
     root = Path(__file__).resolve().parents[1]
-    calls, state = [], {}
+    calls, state = [], {'expected_state': 'pending', 'website': True, 'wrong_key': False}
 
     class Fixture(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -25,7 +25,7 @@ def main():
                 assert not self.headers.get('Authorization') and not self.headers.get('X-API-Key')
                 data = {'domain': 'trustmodel.ai', 'assessed': True, 'trust_score': 100}
             elif self.path == '/v1/pr-trust/review/':
-                assert self.headers.get('X-API-Key') == 'tm-fixture-only'
+                assert self.headers.get('X-API-Key') in ('tm-fixture-only', 'wrong-key')
                 assert not self.headers.get('Authorization')
                 assert body['changed_files'] == ['agents/run.py']
                 assert 'github_token' not in body and 'changed_assets' not in body
@@ -33,11 +33,14 @@ def main():
                 data = {'status': 'not_available', 'passed': False, 'pr_diff_evaluated': False,
                         'trust_score': None, 'message': 'No code was evaluated. No passing gate was issued.'}
                 status = 201
+                if state['wrong_key']:
+                    status = 401
+                    data = {'detail': 'UPSTREAM_SECRET_SENTINEL_NEVER_LOG'}
             else:
                 assert self.headers.get('Authorization') == 'token gh-fixture-only' or self.headers.get('Authorization') == 'Bearer gh-fixture-only'
                 assert not self.headers.get('X-API-Key')
                 if '/statuses/' in self.path:
-                    assert body['state'] == 'error'
+                    assert body['state'] == state['expected_state']
                     data = {'id': 1}
                 elif self.path.endswith('/pulls/1'):
                     data = {'state': 'open', 'head': {'sha': state['head']},
@@ -48,9 +51,12 @@ def main():
                     data = []
                 elif '/comments' in self.path:
                     assert 'Trust Review — not available' in body['body']
-                    assert 'Website TrustScore — informational' in body['body']
-                    assert '**100/100**' in body['body']
-                    assert 'not a review of this PR or its code' in body['body']
+                    if state['website']:
+                        assert 'Website TrustScore — informational' in body['body']
+                        assert '**100/100**' in body['body']
+                    else:
+                        assert 'website assessment below' not in body['body']
+                        assert 'Website TrustScore' not in body['body']
                     data = {'id': 42}
                 else:
                     raise AssertionError('Unexpected fixture route: ' + self.path)
@@ -92,7 +98,7 @@ def main():
                    'INPUT_DETECT': 'agents/**', 'INPUT_THRESHOLD': '65'}
             action = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
                                     capture_output=True, text=True, timeout=40)
-            assert action.returncode == 1, action.stdout + action.stderr
+            assert action.returncode == 0, action.stdout + action.stderr
             assert sum('/comments' in path and method == 'POST' for method, path, _ in calls) == 1
 
             shim = work / 'shim'
@@ -118,7 +124,43 @@ def main():
             assert result['website_scan']['trust_score'] == 100
             assert sum('/comments' in path and method == 'POST' for method, path, _ in calls) == 2
             assert sum('site-score' in path for _, path, _ in calls) == 2
-            print('PASS: built Action and actual runner show website score 100 as informational; PR gates remain error.')
+            assert 'Trust Review response:' in action.stdout
+            assert 'UPSTREAM_SECRET_SENTINEL_NEVER_LOG' not in action.stdout
+            # Missing key: no metadata request or false dashboard-record claim.
+            state['website'] = False
+            env['INPUT_WEBSITE_DOMAIN'] = ''
+            env['INPUT_API_KEY'] = ''
+            before = len(calls)
+            missing = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                     capture_output=True, text=True, timeout=40)
+            assert missing.returncode == 0, missing.stdout + missing.stderr
+            assert not any('/v1/' in path for _, path, _ in calls[before:])
+            # Wrong key: a single error status, job remains green after publishing.
+            env['INPUT_API_KEY'] = 'wrong-key'
+            state.update(wrong_key=True, expected_state='error')
+            wrong = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                   capture_output=True, text=True, timeout=40)
+            assert wrong.returncode == 0, wrong.stdout + wrong.stderr
+            assert '"http_status":401' in wrong.stdout
+            assert 'UPSTREAM_SECRET_SENTINEL_NEVER_LOG' not in wrong.stdout
+            # A docs-only comparison must skip before backend or website requests.
+            git('checkout', '-q', state['base'])
+            (work / 'README.md').write_text('Docs only\n')
+            git('add', '.')
+            git('commit', '-qm', 'docs')
+            state['head'] = git('rev-parse', 'HEAD')
+            event.write_text(json.dumps({'pull_request': {'number': 1, 'head': {'sha': state['head']},
+                                                         'base': {'sha': state['base']}}}))
+            state['expected_state'] = 'success'
+            env['INPUT_WEBSITE_DOMAIN'] = 'trustmodel.ai'
+            before = len(calls)
+            quiet = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                   capture_output=True, text=True, timeout=40)
+            assert quiet.returncode == 0, quiet.stdout + quiet.stderr
+            assert len(calls[before:]) == 1 and '/statuses/' in calls[-1][1]
+            assert '"status":"skipped","passed":false' in quiet.stdout
+            print('PASS: built Action matrix: AI/no key/wrong key/non-AI skip; no false passed or duplicate failed job.')
+            print('PASS: built Action and actual runner show website score 100 as informational; unavailable PR gates remain pending, never passed.')
             print('PASS: website requests carry no credentials; PR requests contain paths only; GitHub receives no TrustModel key.')
     finally:
         server.shutdown()

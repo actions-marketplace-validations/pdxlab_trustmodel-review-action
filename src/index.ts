@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { detectAiChanges } from './detector';
-import { runEval, EvalResult, verifiedPass, evaluationError } from './eval';
+import { runEval, EvalResult, verifiedPass, evaluationError, skipped, ReviewApiError } from './eval';
 import { publishResult } from './comment';
 import { readTrustmodelConfig } from './config';
 import { normalizeWebsiteDomain, scanWebsite, WebsiteResult } from './website';
@@ -24,22 +24,31 @@ export async function run(): Promise<void> {
   let result: EvalResult;
   let website: WebsiteResult | undefined;
   let websiteRequest: { baseUrl: string; domain: string } | undefined;
+  let httpStatus: number | undefined;
   try {
     const input = core.getInput('threshold');
     if (input && !/^[0-9]+$/.test(input)) throw new Error('Invalid threshold.');
     const cfg = await readTrustmodelConfig({ apiKey, threshold: input ? Number(input) : undefined,
       framework: core.getInput('framework') || undefined, detectPatterns: core.getInput('detect').split(',').map(s => s.trim()).filter(Boolean),
       baseUrl: core.getInput('base_url') || 'https://api.trustmodel.ai' });
-    const domain = core.getInput('website_domain');
-    if (domain) websiteRequest = { baseUrl: cfg.baseUrl, domain: normalizeWebsiteDomain(domain) };
     const changedFiles = await detectAiChanges({ baseSha: pr.base.sha, headSha: pr.head.sha, patterns: cfg.detectPatterns });
     core.info(`Detected ${changedFiles.length} matching file path(s). Source content is never read or uploaded.`);
-    result = await runEval({ cfg, changedFiles, baseSha: pr.base.sha, headSha: pr.head.sha,
+    if (!changedFiles.length) {
+      result = skipped();
+    } else {
+      const domain = core.getInput('website_domain');
+      if (domain) websiteRequest = { baseUrl: cfg.baseUrl, domain: normalizeWebsiteDomain(domain) };
+      result = await runEval({ cfg, changedFiles, baseSha: pr.base.sha, headSha: pr.head.sha,
                              repo: `${ctx.repo.owner}/${ctx.repo.repo}`, prNumber: pr.number });
-  } catch {
+    }
+  } catch (error) {
     // Do not echo upstream error text or substitute a website scan.
+    if (error instanceof ReviewApiError) httpStatus = error.httpStatus;
     result = evaluationError();
   }
+  core.info(`Trust Review response: ${JSON.stringify({ status: result.status, passed: verifiedPass(result),
+    pr_diff_evaluated: result.prDiffEvaluated, trust_score: result.trustScore,
+    run_id: result.runId && /^[0-9a-f-]{36}$/i.test(result.runId) ? result.runId : undefined, http_status: httpStatus })}`);
   // Independent, explicitly requested information. Never substitute it for runEval.
   if (websiteRequest) website = await scanWebsite(websiteRequest);
   core.setOutput('website_domain', website?.domain ?? '');
@@ -58,7 +67,9 @@ export async function run(): Promise<void> {
     core.setFailed('GitHub publication failed; check token permissions. No alternate passing status was issued.');
     return;
   }
-  if (!verifiedPass(result)) core.setFailed(result.message);
+  // The commit status is the gate. Avoid a duplicate red Action job when the
+  // result was published; publication failures above still fail the job.
+  if (!verifiedPass(result)) core.warning(result.message);
 }
 
 if (require.main === module) void run();

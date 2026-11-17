@@ -1,6 +1,6 @@
 import { Config } from './config';
 
-export type EvalStatus = 'not_available' | 'passed' | 'failed' | 'error';
+export type EvalStatus = 'skipped' | 'not_available' | 'passed' | 'failed' | 'error';
 export interface EvalResult {
   status: EvalStatus;
   passed: boolean;
@@ -16,6 +16,15 @@ export const unavailable = (message = 'PR diff evaluation is not available. No c
 });
 export const evaluationError = (): EvalResult => ({ ...unavailable('Trust Review service could not complete the request. No passing gate was issued.'), status: 'error' });
 export const verifiedPass = (r: EvalResult): boolean => r.status === 'passed' && r.passed === true && r.prDiffEvaluated === true;
+export const skipped = (): EvalResult => ({ ...unavailable('No AI-related files changed; review skipped. No code was evaluated.'), status: 'skipped' });
+export function commitState(r: EvalResult): 'success' | 'pending' | 'failure' | 'error' {
+  if (r.status === 'skipped' || verifiedPass(r)) return 'success';
+  if (r.status === 'not_available') return 'pending';
+  return r.status === 'failed' && r.prDiffEvaluated ? 'failure' : 'error';
+}
+export class ReviewApiError extends Error {
+  constructor(readonly httpStatus: number) { super(`Trust Review API returned HTTP ${httpStatus}.`); }
+}
 
 export function parseResult(data: unknown): EvalResult {
   if (!data || typeof data !== 'object') throw new Error('Invalid Trust Review API response.');
@@ -52,7 +61,7 @@ export async function runEval(opts: RunEvalOpts): Promise<EvalResult> {
                            changed_files: opts.changedFiles, threshold: opts.cfg.threshold, framework: opts.cfg.framework ?? '' }),
     signal: AbortSignal.timeout(Math.max(1, Math.min(30_000, deadline - Date.now()))),
   });
-  if (!response.ok) throw new Error(`Trust Review API returned HTTP ${response.status}; no fallback assessment was performed.`);
+  if (!response.ok) throw new ReviewApiError(response.status);
   let data = await response.json() as Record<string, unknown>;
   const runId = data.run_id;
   while (data.status === 'running' || data.status === 'pending') {
@@ -64,7 +73,7 @@ export async function runEval(opts: RunEvalOpts): Promise<EvalResult> {
     const poll = await transport(`${opts.cfg.baseUrl}/v1/pr-trust/review/${runId}/`, {
       headers: { 'X-API-Key': opts.cfg.apiKey }, signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
     });
-    if (!poll.ok) throw new Error(`Trust Review polling returned HTTP ${poll.status}; no fallback assessment was performed.`);
+    if (!poll.ok) throw new ReviewApiError(poll.status);
     data = await poll.json() as Record<string, unknown>;
   }
   return parseResult(data);

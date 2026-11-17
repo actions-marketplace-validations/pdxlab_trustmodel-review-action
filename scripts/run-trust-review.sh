@@ -169,14 +169,17 @@ def website_comment(website):
 
 def publish_result(repo, number, head_sha, result, token, website=None):
     verified = result.get('status') == 'passed' and result.get('passed') is True and result.get('pr_diff_evaluated') is True
-    state = 'success' if verified else 'failure' if result.get('status') == 'failed' and result.get('pr_diff_evaluated') is True else 'error'
-    description = ('Verified PR diff evaluation passed' if verified else
+    state = 'success' if verified or result.get('status') == 'skipped' else 'pending' if result.get('status') == 'not_available' else 'failure' if result.get('status') == 'failed' and result.get('pr_diff_evaluated') is True else 'error'
+    description = ('TR: No AI-related files changed — skipped' if result.get('status') == 'skipped' else
+                   'Verified PR diff evaluation passed' if verified else
                    'Not available: PR diff evaluator has not shipped' if result.get('status') == 'not_available' else
                    'Trust Review did not pass; no passing gate issued')
     # Status first: failure to post a comment must never suppress the gate.
     api(f'https://api.github.com/repos/{repo}/statuses/{head_sha}', token, {
         'state': state, 'context': 'trustmodel/trust-review', 'description': description,
     }, github=True)
+    if result.get('status') == 'skipped':
+        return
     current = api(f'https://api.github.com/repos/{repo}/pulls/{number}', token, github=True)
     if current['head']['sha'] != head_sha:
         return  # a superseded push may report its status but cannot replace the current comment
@@ -190,7 +193,7 @@ def publish_result(repo, number, head_sha, result, token, website=None):
     else:
         raise ReviewError('Too many comment pages to safely locate the review comment')
     if not result.get('pr_diff_evaluated'):
-        body = marker + '\n## Trust Review — not available\n\nThe PR diff evaluator is not available. **No code was evaluated and no passing gate was issued.**\n\nThe PR result is independent of any informational website assessment below.'
+        body = marker + '\n## Trust Review — not available\n\nThe PR diff evaluator is not available. **No code was evaluated and no passing gate was issued.**\n\nFull PR-diff evaluation must ship before this can be a required merge gate.'
     else:
         body = marker + f"\n## Trust Review — {'passed' if verified else 'not passed'}\n\nPR diff evaluated: yes. Score: {result.get('trust_score')}/100."
     if website:
@@ -276,7 +279,10 @@ def main(argv, script_dir):
     }
     exit_error = False
     try:
-        if key:
+        if not paths:
+            result = {'status': 'skipped', 'passed': False, 'pr_diff_evaluated': False, 'trust_score': None,
+                      'message': 'No AI-related files changed; review skipped. No code was evaluated.'}
+        elif key:
             result = api(f'{base}/v1/pr-trust/review/', key, payload)
             if not isinstance(result, dict):
                 raise ReviewError('Invalid Trust Review response')
@@ -295,8 +301,10 @@ def main(argv, script_dir):
             result = {'status': 'not_available', 'passed': False, 'pr_diff_evaluated': False,
                       'trust_score': None, 'reason': 'api_key_missing',
                       'message': 'PR diff evaluation is not available. An API key is required to record metadata.'}
-        if result.get('status') not in ('not_available', 'passed', 'failed', 'error'):
+        if result.get('status') not in ('skipped', 'not_available', 'passed', 'failed', 'error'):
             raise ReviewError('Unknown Trust Review status')
+        if paths and result.get('status') == 'skipped':
+            raise ReviewError('Server cannot skip detected AI changes')
         if type(result.get('passed')) is not bool or type(result.get('pr_diff_evaluated')) is not bool:
             raise ReviewError('Missing gate decision or evaluation evidence')
         if result.get('passed') or result.get('status') == 'passed':
@@ -309,7 +317,9 @@ def main(argv, script_dir):
         exit_error = True
         result = {'status': 'error', 'passed': False, 'pr_diff_evaluated': False,
                   'trust_score': None, 'message': 'Trust Review service could not complete the request. No passing gate was issued.'}
-    website = scan_website(base, domain) if domain else None
+    summary = {k: result.get(k) for k in ('status', 'passed', 'pr_diff_evaluated', 'trust_score')}
+    print('Trust Review response: ' + json.dumps(summary), file=sys.stderr)
+    website = scan_website(base, domain) if domain and result['status'] != 'skipped' else None
     if website:
         result['website_scan'] = website
     if post_github:
@@ -328,7 +338,7 @@ def main(argv, script_dir):
             print(f"Website TrustScore (informational): {website['domain']} | {website['trust_score'] if website['trust_score'] is not None else 'unavailable'} | not a PR code review")
         if result.get('run_id'):
             print(f"Run: {result['run_id']}")
-    return 3 if exit_error else 0 if passed else 2
+    return 3 if exit_error else 0 if passed or result['status'] == 'skipped' else 2
 
 
 

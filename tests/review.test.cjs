@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
-const { runEval, parseResult, unavailable, verifiedPass } = require('../dist_ts/eval.js');
+const { runEval, parseResult, unavailable, verifiedPass, skipped, evaluationError, commitState } = require('../dist_ts/eval.js');
 const { buildComment, publishResult } = require('../dist_ts/comment.js');
 const { detectAiChanges } = require('../dist_ts/detector.js');
 const { readTrustmodelConfig } = require('../dist_ts/config.js');
@@ -80,10 +80,10 @@ function octokit({head=opts.headSha,commentError=false}={}) {
 }
 const pub=(kit,result=unavailable())=>publishResult({octokit:kit,owner:'acme',repo:'app',prNumber:1,headSha:opts.headSha,result});
 
-test('unavailable results post an error status before their comment', async()=>{
+test('unavailable results post a pending status before their comment', async()=>{
   const kit=octokit();await pub(kit);
   assert.equal(kit.calls[0][0],'status');
-  assert.equal(kit.calls[0][1].state,'error');
+  assert.equal(kit.calls[0][1].state,'pending');
   assert.equal(kit.calls[0][1].context,'trustmodel/trust-review');
   assert.equal(kit.calls[1][0],'comment');
 });
@@ -137,7 +137,7 @@ test('informational website request sends no API key, GitHub token, or PR data',
   }});
   const kit=octokit();
   await publishResult({octokit:kit,owner:'acme',repo:'app',prNumber:1,headSha:opts.headSha,result:unavailable(),website});
-  assert.equal(kit.calls[0][1].state, 'error');
+  assert.equal(kit.calls[0][1].state, 'pending');
   assert.equal(kit.calls[0][1].target_url, undefined);
   const body=kit.calls[1][1].body;
   assert.match(body,/Trust Review — not available/);
@@ -165,4 +165,23 @@ test('website outage cannot change a verified PR result', async () => {
   assert.equal(kit.calls[0][1].state,'success');
   assert.match(kit.calls[1][1].body,/Website TrustScore: unavailable/);
   assert.equal(result.trustScore,90);
+});
+
+
+test('quiet skips succeed without claiming evaluation or publishing a comment', async () => {
+  const result=skipped(); const kit=octokit(); await pub(kit,result);
+  assert.equal(verifiedPass(result),false);
+  assert.equal(result.prDiffEvaluated,false);
+  assert.equal(kit.calls.length,1);
+  assert.equal(kit.calls[0][1].state,'success');
+  assert.match(kit.calls[0][1].description,/skipped/);
+});
+test('only verified evidence passes; unavailable is pending and errors stay errors', () => {
+  assert.equal(commitState(unavailable()),'pending');
+  assert.equal(commitState(evaluationError()),'error');
+  assert.equal(commitState(parseResult({status:'failed',passed:false,pr_diff_evaluated:true,trust_score:40})),'failure');
+  assert.throws(()=>parseResult({status:'skipped',passed:false,pr_diff_evaluated:false}));
+});
+test('no website below is mentioned when website information is disabled', () => {
+  assert.doesNotMatch(buildComment(unavailable()),/website assessment below|Website TrustScore/);
 });

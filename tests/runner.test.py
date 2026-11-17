@@ -54,11 +54,11 @@ class RunnerTests(unittest.TestCase):
         self.assertNotIn("gh-secret", out.getvalue()+err.getvalue())
         return code, out.getvalue()
 
-    def test_not_available_publishes_error_and_paths_only(self):
+    def test_not_available_publishes_pending_and_paths_only(self):
         self.assertEqual(self.run_main()[0], 2)
         writes = [(url, data) for url, _, data in self.calls if data is not None and "api.github.com" in url]
         self.assertIn("/statuses/", writes[0][0])
-        self.assertEqual(writes[0][1]["state"], "error")
+        self.assertEqual(writes[0][1]["state"], "pending")
         self.assertIn("Trust Review — not available", writes[1][1]["body"])
 
     def test_dry_run_does_not_submit_or_publish(self):
@@ -98,15 +98,17 @@ class RunnerTests(unittest.TestCase):
         self.assertEqual(status["state"], "error")
         self.assertTrue(all("site-score" not in url for url, _, _ in self.calls))
 
-    def test_empty_paths_cannot_pass(self):
+    def test_empty_paths_skip_quietly_without_claiming_a_pass(self):
         self.paths.write_text('[]')
-        def empty(url, token, payload=None, **kwargs):
-            if "api.github.com" not in url:
-                self.assertEqual(payload["changed_files"], [])
-                return self.result
-            return self.api(url, token, payload, **kwargs)
-        self.ns["api"] = empty
-        self.assertEqual(self.run_main()[0], 2)
+        code, out = self.run_main('--json', '--website-domain', 'trustmodel.ai')
+        self.assertEqual(code, 0)
+        result = json.loads(out)
+        self.assertEqual(result['status'], 'skipped')
+        self.assertFalse(result['passed'])
+        self.assertTrue(all('api.github.com' in url for url, _, _ in self.calls))
+        writes = [(url, data) for url, _, data in self.calls if data is not None]
+        self.assertEqual(len(writes), 1)
+        self.assertEqual(writes[0][1]['state'], 'success')
 
     def test_settings_are_literal_and_assets_objects_are_rejected(self):
         p = self.root / ".trustreviewenv"
@@ -123,7 +125,7 @@ class RunnerTests(unittest.TestCase):
         self.assertFalse(result['pr_diff_evaluated'])
         self.assertEqual(result['website_scan']['trust_score'], 100)
         status = next(data for url, _, data in self.calls if '/statuses/' in url)
-        self.assertEqual(status['state'], 'error')
+        self.assertEqual(status['state'], 'pending')
         body = next(data['body'] for url, _, data in self.calls if '/comments' in url and data)
         self.assertIn('Website TrustScore — informational', body)
         self.assertIn('not a review of this PR or its code', body)
