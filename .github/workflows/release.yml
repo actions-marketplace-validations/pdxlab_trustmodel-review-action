@@ -1,0 +1,56 @@
+name: Release Action
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-action-v1
+  cancel-in-progress: false
+
+jobs:
+  release:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - run: python3 tests/website_e2e.py
+      - name: Verify committed distribution
+        run: git diff --exit-code -- dist/
+      - name: Release tested main commit and update v1
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          TAG="v$(node -p "require('./package.json').version")"
+          [[ "$TAG" =~ ^v1\.[0-9]+\.[0-9]+$ ]]
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          if git rev-parse "$TAG^{commit}" >/dev/null 2>&1; then
+            test "$(git rev-parse "$TAG^{commit}")" = "$GITHUB_SHA" || {
+              echo '::error::Version already belongs to another commit; bump package.json first.'
+              exit 1
+            }
+          else
+            git tag -a "$TAG" "$GITHUB_SHA" -m "$TAG"
+            git push origin "refs/tags/$TAG"
+          fi
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --verify-tag --title "$TAG — safe PR status and website scoring" --notes-file RELEASE_NOTES.md
+          fi
+          OLD_TAG=$(git ls-remote origin refs/tags/v1 | cut -f1)
+          git tag -fa v1 "$GITHUB_SHA" -m "Latest v1: $TAG"
+          git push "--force-with-lease=refs/tags/v1:$OLD_TAG" origin refs/tags/v1
+          echo "Released $TAG and moved v1 to $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
