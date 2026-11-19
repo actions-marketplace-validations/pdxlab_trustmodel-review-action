@@ -1,126 +1,47 @@
-import type { getOctokit } from '@actions/github';
-import type { Context } from '@actions/github/lib/context';
-import { EvalResult } from './eval';
-import { Config } from './config';
+import * as github from '@actions/github';
+import { EvalResult, verifiedPass, commitState } from './eval';
+import { WebsiteResult, websiteComment } from './website';
+export const MARKER = '<!-- trustmodel-trust-review -->';
+type Octokit = ReturnType<typeof github.getOctokit>;
 
-type Octokit = ReturnType<typeof getOctokit>;
-
-const GRADE_EMOJI: Record<string, string> = { A: '🟢', B: '🔵', C: '🟡', D: '🟠', F: '🔴' };
-const MARKER = '<!-- trustmodel-trust-review -->';
-
-function deltaStr(d: number | null | undefined): string {
-  if (d == null || d === 0) return '—';
-  if (d <= -10) return `⚠️ ${d > 0 ? '+' : ''}${d}`;
-  if (d <   0)  return `↓ ${d}`;
-  return `↑ +${d}`;
+function prComment(result: EvalResult): string {
+  if (!result.prDiffEvaluated) return [
+    MARKER, '## Trust Review — not available', '',
+    'The PR diff evaluator is not available. **No code was evaluated and no passing gate was issued.**', '',
+    'Full PR-diff evaluation must ship before this can be a required merge gate.',
+  ].join('\n');
+  return [MARKER, `## Trust Review — ${verifiedPass(result) ? 'passed' : 'not passed'}`, '',
+          `PR diff evaluated: yes. Score: ${result.trustScore ?? 'unscored'}/100.`,
+          result.reportUrl ? `[Report](${result.reportUrl})` : ''].join('\n');
 }
 
-export async function postReviewComment({
-  octokit, ctx, prNumber, headSha, result, cfg,
-}: {
-  octokit: Octokit;
-  ctx: Context;
-  prNumber: number;
-  headSha: string;
-  result: EvalResult;
-  cfg: Config;
-}): Promise<void> {
-  const passed = result.trustScore >= cfg.threshold;
-  const grade  = result.grade ?? '—';
-  const emoji  = GRADE_EMOJI[grade] ?? '⚪';
-  const base   = result.baseTrustScore;
-  const diff   = base != null
-    ? ` (${result.trustScore > base ? '↑' : result.trustScore < base ? '↓' : '→'} from ${base})`
-    : '';
-
-  const lines: string[] = [MARKER, ''];
-  lines.push(`## ${emoji} Trust Review (TR) — TrustScore **${result.trustScore}/100 (${grade})**${diff}`);
-  lines.push('');
-  lines.push('> **Just as every change needs a PR review, every AI change needs a Trust Review (TR).  ');
-  lines.push('> PR → TR → deploy. No passing TR → no deploy.**');
-  lines.push('');
-
-  if (result.free) {
-    lines.push('> ⏳ **Scoring pending** — no `TRUSTMODEL_API_KEY` detected.');
-    lines.push('> This change was recorded and will appear in the TrustModel console,');
-    lines.push('> but the 0–100 TrustScore hasn\'t been calculated yet. The status check');
-    lines.push('> is set to **pending** (yellow), not failed — it won\'t block your merge.');
-    lines.push('>');
-    lines.push('> Add `TRUSTMODEL_API_KEY` to your repo secrets for the full scored evaluation:');
-    lines.push('> per-dimension diff, compliance mapping, critical-dimension regression blocking.');
-    lines.push('>');
-    lines.push('> [Get API key →](https://app.trustmodel.ai/keys)  &nbsp;  [Learn more →](https://trustmodel.ai/trust-review-action)');
-    lines.push('');
-  } else if (result.dimensionDeltas && result.dimensionDeltas.length > 0) {
-    lines.push('| Dimension | Before | After | Change |');
-    lines.push('|---|---|---|---|');
-    const sorted = [...result.dimensionDeltas].sort((a, b) => (a.delta ?? 0) - (b.delta ?? 0));
-    for (const d of sorted) {
-      const crit   = d.critical ? '⭐ ' : '';
-      const before = d.before != null ? String(d.before) : '—';
-      const after  = d.after  != null ? String(d.after)  : '—';
-      lines.push(`| ${crit}${d.label} | ${before} | ${after} | ${deltaStr(d.delta)} |`);
-    }
-    lines.push('');
-    lines.push('> ⭐ Critical dimension — a drop of >10 points blocks the TR even if the overall score passes.');
-    lines.push('');
-  }
-
-  // Warnings.
-  const regressions = (result.dimensionDeltas ?? []).filter(d => d.critical && (d.delta ?? 0) < -10);
-  if (regressions.length) {
-    const names = regressions.map(d => d.label).join(', ');
-    lines.push(`> ⚠️ **${names} dropped sharply. Review before merging.**`);
-    lines.push('');
-  }
-
-  if (passed && !regressions.length) {
-    lines.push(`> ✅ **TR passed** — score ${result.trustScore} ≥ threshold ${cfg.threshold}.`);
-  } else if (!passed) {
-    lines.push(`> 🚫 **TR failed** — score ${result.trustScore} is below threshold (${cfg.threshold}). **Deploy blocked.**`);
-  }
-  lines.push('');
-
-  if (result.complianceGaps?.length) {
-    lines.push(`**Compliance gaps (${cfg.framework ?? 'framework'}):** ${result.complianceGaps.slice(0, 5).join(', ')}`);
-    lines.push('');
-  }
-
-  // Deeplinks.
-  const links: string[] = [];
-  if (result.reportUrl) links.push(`[📊 Full report →](${result.reportUrl})`);
-  if (result.certUrl)   links.push(`[🏅 AgentCert →](${result.certUrl})`);
-  links.push('[🔍 TrustModel console →](https://app.trustmodel.ai)');
-  lines.push(links.join('  &nbsp;·&nbsp;  '));
-  lines.push('');
-  lines.push('---');
-  lines.push('*[AI Trust Reviewer](https://github.com/pdxlab/trustmodel-review-action) — the Trust Review for every AI PR. The `trustmodel/trust-review` check must be green before deploy.*');
-
-  const body = lines.join('\n');
-
-  // Upsert: find our marker comment and update it, or create new.
-  const existing = await findExistingComment(octokit, ctx, prNumber);
-  if (existing) {
-    await octokit.rest.issues.updateComment({
-      owner: ctx.repo.owner, repo: ctx.repo.repo,
-      comment_id: existing, body,
-    });
-  } else {
-    await octokit.rest.issues.createComment({
-      owner: ctx.repo.owner, repo: ctx.repo.repo,
-      issue_number: prNumber, body,
-    });
-  }
+export function buildComment(result: EvalResult, website?: WebsiteResult): string {
+  return prComment(result) + websiteComment(website);
 }
 
-async function findExistingComment(octokit: Octokit, ctx: Context, prNumber: number): Promise<number | null> {
-  for await (const page of octokit.paginate.iterator(
-    octokit.rest.issues.listComments,
-    { owner: ctx.repo.owner, repo: ctx.repo.repo, issue_number: prNumber, per_page: 100 }
-  )) {
-    for (const c of page.data) {
-      if (c.body?.includes(MARKER)) return c.id;
-    }
+export async function publishResult(opts: { octokit: Octokit; owner: string; repo: string; prNumber: number; headSha: string; result: EvalResult; website?: WebsiteResult }): Promise<void> {
+  const { octokit, owner, repo, prNumber, headSha, result } = opts;
+  // Publish the gate first. A comment failure can never suppress commit status.
+  await octokit.rest.repos.createCommitStatus({ owner, repo, sha: headSha,
+    state: commitState(result),
+    context: 'trustmodel/trust-review',
+    description: result.status === 'skipped' ? 'TR: No AI-related files changed — skipped' :
+                 result.status === 'not_available' ? 'TR: Evaluation unavailable; no passing gate issued' :
+                 result.status === 'error' ? 'Trust Review service error; no passing gate issued' :
+                 verifiedPass(result) ? 'Verified PR diff evaluation passed' : 'PR diff evaluation did not pass',
+    ...(result.reportUrl ? { target_url: result.reportUrl } : {}),
+  });
+  if (result.status === 'skipped') return; // Quiet non-AI skip: no comment or website scan.
+  const current = await octokit.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  if (current.data.head.sha !== headSha) return; // an older push cannot replace the current PR comment
+  let commentId: number | undefined;
+  for await (const page of octokit.paginate.iterator(octokit.rest.issues.listComments, { owner, repo, issue_number: prNumber, per_page: 100 })) {
+    const match = page.data.find(c => c.body?.includes(MARKER) && c.user?.type === 'Bot');
+    if (match) { commentId = match.id; break; }
+    // Same bounded pagination contract as the local runner.
+    if (page.url && new URL(page.url).searchParams.get('page') === '10') throw new Error('Too many comment pages.');
   }
-  return null;
+  const body = buildComment(result, opts.website);
+  if (commentId) await octokit.rest.issues.updateComment({ owner, repo, comment_id: commentId, body });
+  else await octokit.rest.issues.createComment({ owner, repo, issue_number: prNumber, body });
 }
