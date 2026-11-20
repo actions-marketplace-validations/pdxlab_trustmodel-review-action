@@ -82,7 +82,11 @@ avoid overlapping Action runs. Comment upsert is best-effort, not a transactiona
 GitHub guarantee across separate workflows or local invocations.
 
 `detect` is a comma-separated list of globs. Defaults include prompts, agents,
-evals, chains, and tools; those broad matches transmit names only. An optional
+evals, chains, and source files under `tools/`; those broad matches transmit names
+only. The defaults skip HTTP user-agent files (`user_agent.py`, `UserAgent.ts`) and
+dependency or build paths (`node_modules/`, `vendor/`, `.venv/`, `venv/`,
+`site-packages/`, `dist/`), decided from the path alone. A custom `detect` list is
+used exactly as given, with no exclusions. An optional
 `.trustmodel.yml` can set `detect` and `eval.threshold`/`eval.framework`. The
 previous `block_on_regression` and `cert_on_pass` inputs are not supported by this
 preview; no regression evaluation or certificate is claimed.
