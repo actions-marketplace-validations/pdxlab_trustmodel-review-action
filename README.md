@@ -1,29 +1,27 @@
-# Trust Review Action — metadata preview
+# TrustModel Review Action
 
 [![GitHub Marketplace](https://img.shields.io/badge/GitHub%20Marketplace-Trust%20Review%20Action-blue?logo=github)](https://github.com/marketplace/actions/trustmodel-review)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
 [![Version](https://img.shields.io/github/v/release/pdxlab/trustmodel-review-action)](https://github.com/pdxlab/trustmodel-review-action/releases)
 
-**The PR diff evaluator is not available. This preview cannot pass an AI evaluation gate.**
+Gate AI-related pull requests with TrustModel trust scoring. The Action detects AI-related code changes, records evaluation metadata, and posts trust metrics as PR comments and commit statuses.
 
 [View on GitHub Marketplace](https://github.com/marketplace/actions/trustmodel-review)
 
 The Action detects matching changed **file paths** and, when an API key is
 configured, records metadata through `POST /v1/pr-trust/review/`. It never reads
-or uploads those files' contents. Its GitHub token remains on the runner and is
-used only for GitHub comments and commit statuses.
+or uploads file contents. The GitHub token stays on the runner and is used only
+for PR comments and commit statuses.
 
-There is no automatic website scan, no paid/full-evaluation claim, no certificate,
-and no fallback on missing keys, backend errors, HTTP 404/503, network failures,
-or polling timeout. A website score is never a PR TrustScore.
+An optional `website_domain` input surfaces an informational website TrustScore
+alongside the PR — it is never used as the PR gate decision.
 
-## Use the preview
+## Quickstart
 
-After the companion metadata-only backend is deployed, pin this Action to the
-reviewed commit SHA (the existing `v1` tag still contains the older behavior):
+Pin this Action to the reviewed commit SHA:
 
 ```yaml
-name: Trust Review preview
+name: Trust Review
 on:
   pull_request:
     types: [opened, synchronize, reopened]
