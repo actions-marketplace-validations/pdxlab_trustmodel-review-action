@@ -6,7 +6,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { runEval, parseResult, unavailable, verifiedPass, skipped, evaluationError, commitState } = require('../dist_ts/eval.js');
 const { buildComment, publishResult } = require('../dist_ts/comment.js');
-const { detectAiChanges } = require('../dist_ts/detector.js');
+const { detectAiChanges, matchesDetection } = require('../dist_ts/detector.js');
 const { readTrustmodelConfig } = require('../dist_ts/config.js');
 const { scanWebsite, normalizeWebsiteDomain } = require('../dist_ts/website.js');
 const cfg = { apiKey: 'tm-test', baseUrl: 'http://127.0.0.1:8000', threshold: 65, detectPatterns: [] };
@@ -109,6 +109,40 @@ test('detector includes added/deleted/renamed paths without reading file content
     const files=await detectAiChanges({baseSha:base,headSha:head,patterns:[]});
     assert.deepEqual(files.sort(),['prompts/new.prompt','prompts/old.prompt']);
     await assert.rejects(detectAiChanges({baseSha:'HEAD;echo unsafe',headSha:head,patterns:[]}));
+  } finally {process.chdir(old);fs.rmSync(dir,{recursive:true,force:true});}
+});
+
+test('default detection skips user-agent, dependency and build paths (TRUS-2595)', ()=>{
+  for (const f of ['user_agent.py','src/http/user-agent.ts','lib/UserAgent.ts','src/useragent_parser.js',
+    'web/USER_AGENT.js','node_modules/pkg/agents/run.py','vendor/agents/x.py','dist/agent.js','.venv/lib/agents/a.py',
+    'lib/python3.12/site-packages/langchain/agents/x.py','tools/build.sh','tools/data.json'])
+    assert.equal(matchesDetection(f,[]),false,f);
+});
+
+test('default detection still finds AI paths (TRUS-2595)', ()=>{
+  for (const f of ['agents/planner.py','src/support_agent.py','src/agentRunner.ts','src/agent.js','tools/search.py',
+    'pkg/tools/sub/fetch.ts','prompts/system.md','app/x.prompt','.trustmodel.yml','evals/suite.yaml','chains/qa.py'])
+    assert.equal(matchesDetection(f,[]),true,f);
+});
+
+test('custom detect patterns are not narrowed by the default excludes (TRUS-2595)', ()=>{
+  assert.equal(matchesDetection('src/user_agent.py',['**/*agent*.py']),true);
+  assert.equal(matchesDetection('vendor/agents/x.py',['vendor/**']),true);
+  assert.equal(matchesDetection('agents/planner.py',['prompts/**']),false);
+});
+
+test('detector applies the default excludes to a real diff without reading content', async()=>{
+  const old=process.cwd();const dir=fs.mkdtempSync(path.join(os.tmpdir(),'trust-excl-'));
+  const git=(...args)=>execFileSync('git',args,{cwd:dir,encoding:'utf8'}).trim();
+  try {
+    git('init','-q');git('config','user.name','Test');git('config','user.email','test@example.invalid');
+    fs.writeFileSync(path.join(dir,'README.md'),'base');git('add','.');git('commit','-qm','base');const base=git('rev-parse','HEAD');
+    fs.mkdirSync(path.join(dir,'agents'));fs.mkdirSync(path.join(dir,'http'));
+    fs.writeFileSync(path.join(dir,'agents','run.py'),'DO-NOT-UPLOAD-CONTENT');
+    fs.writeFileSync(path.join(dir,'http','user_agent.py'),'import openai  # content must not matter');
+    git('add','.');git('commit','-qm','head');const head=git('rev-parse','HEAD');
+    process.chdir(dir);
+    assert.deepEqual(await detectAiChanges({baseSha:base,headSha:head,patterns:[]}),['agents/run.py']);
   } finally {process.chdir(old);fs.rmSync(dir,{recursive:true,force:true});}
 });
 
