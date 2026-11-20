@@ -1,4 +1,4 @@
-name: 'TrustModel Review'
+name: 'TrustModel Review (TR)'
 description: 'Gate AI-related pull requests with TrustModel trust scoring. Detects AI code changes, posts trust metrics as PR comments and commit statuses, and surfaces website TrustScores.'
 author: 'pdxlab'
 branding:
