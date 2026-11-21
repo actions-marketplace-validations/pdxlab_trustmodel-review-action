@@ -8,6 +8,56 @@ The missing CI gate for AI code changes. Automatically evaluates every PR that t
 
 ---
 
+## Install in 3 steps
+
+### Step 1 — Install the GitHub App
+
+**[Install TrustModel Review on GitHub](https://github.com/apps/trustmodel-review)**
+
+This grants TR read access to your repo so it can fetch changed AI files for evaluation. Required for private repos. Public repos can skip this step.
+
+> One-click install. Select the repos you want TR to evaluate. No other permissions needed.
+
+### Step 2 — Add your API key
+
+Get a free API key at **[trustmodel.ai/developers](https://trustmodel.ai/developers)**, then add it as a repository secret:
+
+**Settings → Secrets and variables → Actions → New repository secret**
+
+Name: `TRUSTMODEL_API_KEY`
+
+### Step 3 — Add the workflow
+
+Create `.github/workflows/trust-review.yml`:
+
+```yaml
+name: Trust Review (TR)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+permissions:
+  contents: read
+  pull-requests: write
+  statuses: write
+jobs:
+  trust-review:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pdxlab/trustmodel-review-action@v1
+        with:
+          api_key: ${{ secrets.TRUSTMODEL_API_KEY }}
+          threshold: 70
+```
+
+Then make `trustmodel/trust-review` a **required status check** in **Settings → Branches → Branch protection rules**.
+
+That's it. TR will score every AI-related PR and block merges below your threshold.
+
+---
+
 ## Why add TR to your AI pipeline?
 
 Standard code review catches logic bugs. It does not catch AI trust regressions.
