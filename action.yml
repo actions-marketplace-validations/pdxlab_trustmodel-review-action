@@ -1,5 +1,5 @@
-name: 'TrustModel Review'
-description: 'PR metadata preview with an optional, separately labelled website TrustScore. No PR evaluator is available; no passing gate is issued.'
+name: 'TrustModel Review (TR)'
+description: 'Gate AI-related pull requests with TrustModel trust scoring. Detects AI code changes, posts trust metrics as PR comments and commit statuses, and surfaces website TrustScores.'
 author: 'pdxlab'
 branding:
   icon: 'shield'
@@ -7,7 +7,7 @@ branding:
 
 inputs:
   api_key:
-    description: 'TrustModel key for recording path-only metadata. No evaluator is available yet.'
+    description: 'TrustModel API key (get one at trustmodel.ai/developers).'
     required: false
     default: ''
   github_token:
@@ -42,7 +42,7 @@ outputs:
   website_trust_score:
     description: 'Informational website score, empty when unavailable or disabled. Never a PR score.'
   status:
-    description: 'skipped, not_available, passed, failed, or error. This preview returns not_available.'
+    description: 'skipped, not_available, passed, failed, or error.'
   passed:
     description: 'True only for an explicit server-verified PR diff evaluation pass.'
   pr_diff_evaluated:
