@@ -1,4 +1,4 @@
-import { Config } from './config';
+import { Config, ReviewMode } from './config';
 
 export type EvalStatus = 'skipped' | 'not_available' | 'passed' | 'failed' | 'error';
 export interface EvalResult {
@@ -17,8 +17,11 @@ export const unavailable = (message = 'PR diff evaluation is not available. No c
 export const evaluationError = (): EvalResult => ({ ...unavailable('Trust Review service could not complete the request. No passing gate was issued.'), status: 'error' });
 export const verifiedPass = (r: EvalResult): boolean => r.status === 'passed' && r.passed === true && r.prDiffEvaluated === true;
 export const skipped = (): EvalResult => ({ ...unavailable('No AI-related files changed; review skipped. No code was evaluated.'), status: 'skipped' });
-export function commitState(r: EvalResult): 'success' | 'pending' | 'failure' | 'error' {
+export function commitState(r: EvalResult, mode: ReviewMode = 'enforce'): 'success' | 'pending' | 'failure' | 'error' {
   if (r.status === 'skipped' || verifiedPass(r)) return 'success';
+  // Advisory never blocks or hangs a merge. The status description and the
+  // `passed` output still say the PR was not verified (see comment.ts).
+  if (mode === 'advisory') return 'success';
   if (r.status === 'not_available') return 'pending';
   return r.status === 'failed' && r.prDiffEvaluated ? 'failure' : 'error';
 }
@@ -35,6 +38,13 @@ export function parseResult(data: unknown): EvalResult {
   if ((d.status === 'passed' || d.passed === true) && !(d.status === 'passed' && d.passed === true && d.pr_diff_evaluated === true
       && typeof d.trust_score === 'number' && Number.isFinite(d.trust_score) && d.trust_score >= 0 && d.trust_score <= 100)) {
     throw new Error('Unverified or inconsistent passing result rejected.');
+  }
+  // TRUS-2605: the gateway found no AI-related file among the submitted paths, so
+  // there was nothing to score. Treat it exactly like this Action's own no-AI skip
+  // (success status, no comment). Only the reason code is used, never server text,
+  // and only for an unevaluated, non-passing not_available answer.
+  if (d.status === 'not_available' && d.reason === 'no_ai_changes' && d.passed === false && d.pr_diff_evaluated === false) {
+    return { ...skipped(), runId: typeof d.run_id === 'string' ? d.run_id : undefined };
   }
   return {
     status: d.status as EvalStatus, passed: d.passed, prDiffEvaluated: d.pr_diff_evaluated,

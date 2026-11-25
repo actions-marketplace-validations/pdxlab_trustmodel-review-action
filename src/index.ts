@@ -3,7 +3,7 @@ import * as github from '@actions/github';
 import { detectAiChanges } from './detector';
 import { runEval, EvalResult, verifiedPass, evaluationError, skipped, ReviewApiError } from './eval';
 import { publishResult } from './comment';
-import { readTrustmodelConfig } from './config';
+import { readTrustmodelConfig, ReviewMode } from './config';
 import { normalizeWebsiteDomain, scanWebsite, WebsiteResult } from './website';
 
 export async function run(): Promise<void> {
@@ -25,12 +25,17 @@ export async function run(): Promise<void> {
   let website: WebsiteResult | undefined;
   let websiteRequest: { baseUrl: string; domain: string } | undefined;
   let httpStatus: number | undefined;
+  // Fail safe: until the configuration has been read and validated, a
+  // problem is reported as enforce (a visible failure), never as advisory.
+  let mode: ReviewMode = 'enforce';
   try {
     const input = core.getInput('threshold');
     if (input && !/^[0-9]+$/.test(input)) throw new Error('Invalid threshold.');
     const cfg = await readTrustmodelConfig({ apiKey, threshold: input ? Number(input) : undefined,
       framework: core.getInput('framework') || undefined, detectPatterns: core.getInput('detect').split(',').map(s => s.trim()).filter(Boolean),
-      baseUrl: core.getInput('base_url') || 'https://api.trustmodel.ai' });
+      baseUrl: core.getInput('base_url') || 'https://api.trustmodel.ai', mode: core.getInput('mode') || undefined });
+    mode = cfg.mode;
+    core.info(`Trust Review mode: ${mode}.`);
     const changedFiles = await detectAiChanges({ baseSha: pr.base.sha, headSha: pr.head.sha, patterns: cfg.detectPatterns });
     core.info(`Detected ${changedFiles.length} matching file path(s). Source content is never read or uploaded.`);
     if (!changedFiles.length) {
@@ -55,6 +60,7 @@ export async function run(): Promise<void> {
   core.setOutput('website_scan_status', website?.status ?? 'disabled');
   core.setOutput('website_trust_score', website?.trustScore === null || !website ? '' : String(website.trustScore));
   core.setOutput('status', result.status);
+  core.setOutput('mode', mode);
   core.setOutput('passed', String(verifiedPass(result)));
   core.setOutput('pr_diff_evaluated', String(result.prDiffEvaluated));
   core.setOutput('trust_score', result.trustScore === null ? '' : String(result.trustScore));
@@ -62,7 +68,7 @@ export async function run(): Promise<void> {
   try {
     if (!githubToken) throw new Error('missing GitHub credential');
     await publishResult({ octokit: github.getOctokit(githubToken), owner: ctx.repo.owner, repo: ctx.repo.repo,
-                          prNumber: pr.number, headSha: pr.head.sha, result, website });
+                          prNumber: pr.number, headSha: pr.head.sha, result, website, mode });
   } catch {
     core.setFailed('GitHub publication failed; check token permissions. No alternate passing status was issued.');
     return;

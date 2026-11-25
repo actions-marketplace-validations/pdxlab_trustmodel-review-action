@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 const { runEval, parseResult, unavailable, verifiedPass, skipped, evaluationError, commitState } = require('../dist_ts/eval.js');
-const { buildComment, publishResult } = require('../dist_ts/comment.js');
+const { buildComment, publishResult, statusDescription, ADVISORY_NOTE } = require('../dist_ts/comment.js');
 const { detectAiChanges, matchesDetection } = require('../dist_ts/detector.js');
 const { readTrustmodelConfig } = require('../dist_ts/config.js');
 const { scanWebsite, normalizeWebsiteDomain } = require('../dist_ts/website.js');
@@ -218,4 +218,91 @@ test('only verified evidence passes; unavailable is pending and errors stay erro
 });
 test('no website below is mentioned when website information is disabled', () => {
   assert.doesNotMatch(buildComment(unavailable()),/website assessment below|Website TrustScore/);
+});
+
+// ---- TRUS-2595: advisory mode (default) never blocks; enforce is today's gate ----
+const failed40=()=>parseResult({status:'failed',passed:false,pr_diff_evaluated:true,trust_score:40});
+const passed90=()=>parseResult({status:'passed',passed:true,pr_diff_evaluated:true,trust_score:90});
+const pubMode=(kit,result,mode)=>publishResult({octokit:kit,owner:'acme',repo:'app',prNumber:1,headSha:opts.headSha,result,mode});
+
+test('advisory: every result is a non-blocking success status', () => {
+  for (const r of [unavailable(), evaluationError(), failed40(), passed90(), skipped()]) {
+    assert.equal(commitState(r,'advisory'),'success', r.status);
+  }
+});
+test('enforce keeps today\'s gate exactly', () => {
+  assert.equal(commitState(unavailable(),'enforce'),'pending');
+  assert.equal(commitState(evaluationError(),'enforce'),'error');
+  assert.equal(commitState(failed40(),'enforce'),'failure');
+  assert.equal(commitState(passed90(),'enforce'),'success');
+  assert.equal(commitState(skipped(),'enforce'),'success');
+});
+test('advisory never reports a pass that did not happen', () => {
+  for (const r of [unavailable(), evaluationError(), failed40()]) {
+    assert.equal(verifiedPass(r), false, r.status);
+    assert.match(statusDescription(r,'advisory'), /^Advisory, not enforced: /);
+    assert.doesNotMatch(statusDescription(r,'advisory'), /evaluation passed/);
+    assert.ok(statusDescription(r,'advisory').length <= 140);
+  }
+  assert.match(statusDescription(failed40(),'advisory'), /did not pass \(40\/100\)/);
+  assert.equal(statusDescription(passed90(),'advisory'), 'Verified PR diff evaluation passed');
+});
+test('advisory comment says it is not blocking; a verified pass and enforce do not', () => {
+  assert.ok(buildComment(failed40(),undefined,'advisory').includes(ADVISORY_NOTE));
+  assert.ok(buildComment(unavailable(),undefined,'advisory').includes(ADVISORY_NOTE));
+  assert.match(buildComment(failed40(),undefined,'advisory'), /not passed/);
+  assert.ok(!buildComment(passed90(),undefined,'advisory').includes(ADVISORY_NOTE));
+  assert.ok(!buildComment(failed40(),undefined,'enforce').includes(ADVISORY_NOTE));
+});
+test('advisory publishes a success status with its advisory description, then the comment', async () => {
+  const kit=octokit(); await pubMode(kit, failed40(), 'advisory');
+  assert.equal(kit.calls[0][1].state,'success');
+  assert.equal(kit.calls[0][1].context,'trustmodel/trust-review');
+  assert.match(kit.calls[0][1].description,/^Advisory, not enforced/);
+  assert.ok(kit.calls[1][1].body.includes(ADVISORY_NOTE));
+});
+test('publishing without a mode stays enforce (no silent behaviour change for callers)', async () => {
+  const kit=octokit(); await pubMode(kit, failed40(), undefined);
+  assert.equal(kit.calls[0][1].state,'failure');
+});
+test('mode resolves input, then .trustmodel.yml, then advisory; bad values are rejected', async () => {
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'tr-mode-')); const cwd=process.cwd();
+  try {
+    process.chdir(dir);
+    assert.equal((await readTrustmodelConfig({...cfg})).mode,'advisory');
+    fs.writeFileSync('.trustmodel.yml','eval:\n  mode: enforce\n');
+    assert.equal((await readTrustmodelConfig({...cfg})).mode,'enforce');
+    assert.equal((await readTrustmodelConfig({...cfg,mode:'advisory'})).mode,'advisory');
+    await assert.rejects(readTrustmodelConfig({...cfg,mode:'block'}));
+    fs.writeFileSync('.trustmodel.yml','eval:\n  mode: true\n');
+    await assert.rejects(readTrustmodelConfig({...cfg}));
+  } finally { process.chdir(cwd); fs.rmSync(dir,{recursive:true,force:true}); }
+});
+
+// ---- TRUS-2605: gateway says no AI files changed -> same as the Action's own skip ----
+const noAi=(extra={})=>parseResult({status:'not_available',reason:'no_ai_changes',passed:false,pr_diff_evaluated:false,trust_score:null,run_id:'63657636-7c06-4179-8352-4eef2fa61be1',...extra});
+test('server no_ai_changes becomes a quiet skip in both modes, never a pass', async () => {
+  const r=noAi();
+  assert.equal(r.status,'skipped');
+  assert.equal(verifiedPass(r),false);
+  assert.equal(r.prDiffEvaluated,false);
+  assert.equal(r.trustScore,null);
+  for (const mode of ['advisory','enforce']) {
+    assert.equal(commitState(r,mode),'success');
+    const kit=octokit(); await pubMode(kit,r,mode);
+    assert.equal(kit.calls.length,1);                       // status only, no comment
+    assert.match(kit.calls[0][1].description,/No AI-related files changed/);
+  }
+});
+test('no_ai_changes is honoured only on an unevaluated, non-passing not_available answer', () => {
+  assert.equal(parseResult({status:'not_available',passed:false,pr_diff_evaluated:false,trust_score:null}).status,'not_available');
+  assert.equal(parseResult({status:'not_available',reason:'something_else',passed:false,pr_diff_evaluated:false}).status,'not_available');
+  assert.equal(parseResult({status:'error',reason:'no_ai_changes',passed:false,pr_diff_evaluated:false}).status,'error');
+  assert.equal(parseResult({status:'failed',reason:'no_ai_changes',passed:false,pr_diff_evaluated:true,trust_score:40}).status,'failed');
+  assert.equal(noAi({pr_diff_evaluated:true}).status,'not_available');
+  assert.throws(()=>noAi({passed:true}));
+});
+test('server message text is never shown for no_ai_changes', () => {
+  const r=noAi({message:'<script>SERVER_TEXT_SENTINEL</script>'});
+  assert.doesNotMatch(r.message,/SERVER_TEXT_SENTINEL/);
 });

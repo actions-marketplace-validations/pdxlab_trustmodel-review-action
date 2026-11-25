@@ -41,6 +41,8 @@ def main():
                 assert not self.headers.get('X-API-Key')
                 if '/statuses/' in self.path:
                     assert body['state'] == state['expected_state']
+                    if state.get('expected_desc'):
+                        assert body['description'].startswith(state['expected_desc']), body['description']
                     data = {'id': 1}
                 elif self.path.endswith('/pulls/1'):
                     data = {'state': 'open', 'head': {'sha': state['head']},
@@ -95,7 +97,9 @@ def main():
                    'GITHUB_EVENT_PATH': str(event), 'GITHUB_API_URL': origin,
                    'INPUT_API_KEY': 'tm-fixture-only', 'INPUT_GITHUB_TOKEN': 'gh-fixture-only',
                    'INPUT_BASE_URL': origin, 'INPUT_WEBSITE_DOMAIN': 'trustmodel.ai',
-                   'INPUT_DETECT': 'agents/**', 'INPUT_THRESHOLD': '65'}
+                   'INPUT_DETECT': 'agents/**', 'INPUT_THRESHOLD': '65',
+                   # The existing matrix pins enforce; the advisory default is checked below.
+                   'INPUT_MODE': 'enforce'}
             action = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
                                     capture_output=True, text=True, timeout=40)
             assert action.returncode == 0, action.stdout + action.stderr
@@ -159,7 +163,27 @@ def main():
             assert quiet.returncode == 0, quiet.stdout + quiet.stderr
             assert len(calls[before:]) == 1 and '/statuses/' in calls[-1][1]
             assert '"status":"skipped","passed":false' in quiet.stdout
+            # TRUS-2595: with no mode set (advisory default), an unavailable AI
+            # change publishes a non-blocking success that says it is advisory,
+            # and the passed output stays false.
+            (work / 'agents' / 'run.py').write_text('print("advisory")\n')
+            git('add', '.')
+            git('commit', '-qm', 'advisory')
+            state['head'] = git('rev-parse', 'HEAD')
+            event.write_text(json.dumps({'pull_request': {'number': 1, 'head': {'sha': state['head']},
+                                                         'base': {'sha': state['base']}}}))
+            state.update(wrong_key=False, website=False, expected_state='success',
+                         expected_desc='Advisory, not enforced: ')
+            env.pop('INPUT_MODE')
+            env['INPUT_API_KEY'] = 'tm-fixture-only'
+            env['INPUT_WEBSITE_DOMAIN'] = ''
+            advisory = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                      capture_output=True, text=True, timeout=40)
+            assert advisory.returncode == 0, advisory.stdout + advisory.stderr
+            assert 'Trust Review mode: advisory.' in advisory.stdout
+            assert '"status":"not_available","passed":false' in advisory.stdout
             print('PASS: built Action matrix: AI/no key/wrong key/non-AI skip; no false passed or duplicate failed job.')
+            print('PASS: advisory default publishes a labelled non-blocking status; passed stays false.')
             print('PASS: built Action and actual runner show website score 100 as informational; unavailable PR gates remain pending, never passed.')
             print('PASS: website requests carry no credentials; PR requests contain paths only; GitHub receives no TrustModel key.')
     finally:
