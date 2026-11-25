@@ -1,3 +1,13 @@
+# v1.1.1 — "no AI files changed" is a quiet skip (TRUS-2605)
+
+- When the gateway reports that none of the submitted paths are AI-related
+  (`reason: no_ai_changes`), the Action now treats it exactly like its own
+  no-AI skip: a success status "TR: No AI-related files changed — skipped",
+  no PR comment, `status=skipped`, `passed=false`. Previously this showed
+  "The PR diff evaluator is not available", which read as an outage.
+- Honoured only for an unevaluated, non-passing `not_available` answer; the
+  server's message text is never displayed.
+
 # v1.1.0 — advisory mode by default (TRUS-2595)
 
 - New `mode` input (`advisory` | `enforce`), also settable as `eval.mode` in

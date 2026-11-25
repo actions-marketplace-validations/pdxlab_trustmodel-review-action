@@ -278,3 +278,31 @@ test('mode resolves input, then .trustmodel.yml, then advisory; bad values are r
     await assert.rejects(readTrustmodelConfig({...cfg}));
   } finally { process.chdir(cwd); fs.rmSync(dir,{recursive:true,force:true}); }
 });
+
+// ---- TRUS-2605: gateway says no AI files changed -> same as the Action's own skip ----
+const noAi=(extra={})=>parseResult({status:'not_available',reason:'no_ai_changes',passed:false,pr_diff_evaluated:false,trust_score:null,run_id:'63657636-7c06-4179-8352-4eef2fa61be1',...extra});
+test('server no_ai_changes becomes a quiet skip in both modes, never a pass', async () => {
+  const r=noAi();
+  assert.equal(r.status,'skipped');
+  assert.equal(verifiedPass(r),false);
+  assert.equal(r.prDiffEvaluated,false);
+  assert.equal(r.trustScore,null);
+  for (const mode of ['advisory','enforce']) {
+    assert.equal(commitState(r,mode),'success');
+    const kit=octokit(); await pubMode(kit,r,mode);
+    assert.equal(kit.calls.length,1);                       // status only, no comment
+    assert.match(kit.calls[0][1].description,/No AI-related files changed/);
+  }
+});
+test('no_ai_changes is honoured only on an unevaluated, non-passing not_available answer', () => {
+  assert.equal(parseResult({status:'not_available',passed:false,pr_diff_evaluated:false,trust_score:null}).status,'not_available');
+  assert.equal(parseResult({status:'not_available',reason:'something_else',passed:false,pr_diff_evaluated:false}).status,'not_available');
+  assert.equal(parseResult({status:'error',reason:'no_ai_changes',passed:false,pr_diff_evaluated:false}).status,'error');
+  assert.equal(parseResult({status:'failed',reason:'no_ai_changes',passed:false,pr_diff_evaluated:true,trust_score:40}).status,'failed');
+  assert.equal(noAi({pr_diff_evaluated:true}).status,'not_available');
+  assert.throws(()=>noAi({passed:true}));
+});
+test('server message text is never shown for no_ai_changes', () => {
+  const r=noAi({message:'<script>SERVER_TEXT_SENTINEL</script>'});
+  assert.doesNotMatch(r.message,/SERVER_TEXT_SENTINEL/);
+});
