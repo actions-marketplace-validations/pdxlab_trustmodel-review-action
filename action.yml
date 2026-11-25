@@ -18,6 +18,10 @@ inputs:
     description: 'Requested future evaluator threshold (1-100); server minimum applies.'
     required: false
     default: ''
+  mode:
+    description: 'advisory (default) posts the score without blocking the merge; enforce makes a below-threshold or unscored PR a failing status. Overrides eval.mode in .trustmodel.yml.'
+    required: false
+    default: ''
   framework:
     description: 'Optional framework metadata.'
     required: false
@@ -43,8 +47,10 @@ outputs:
     description: 'Informational website score, empty when unavailable or disabled. Never a PR score.'
   status:
     description: 'skipped, not_available, passed, failed, or error.'
+  mode:
+    description: 'advisory or enforce: the mode this run used.'
   passed:
-    description: 'True only for an explicit server-verified PR diff evaluation pass.'
+    description: 'True only for an explicit server-verified PR diff evaluation pass, in either mode.'
   pr_diff_evaluated:
     description: 'Whether the server actually evaluated the PR diff.'
   trust_score:

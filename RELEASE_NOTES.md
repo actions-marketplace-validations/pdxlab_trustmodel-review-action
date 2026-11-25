@@ -1,3 +1,20 @@
+# v1.1.0 — advisory mode by default (TRUS-2595)
+
+- New `mode` input (`advisory` | `enforce`), also settable as `eval.mode` in
+  `.trustmodel.yml`. Precedence: input, then the file, then `advisory`.
+- **advisory (default):** never blocks or hangs a merge. Every result publishes a
+  `success` status; anything that did not verifiably pass is described as
+  "Advisory, not enforced: …" (with the score when there is one), and the PR
+  comment says it is not blocking.
+- **enforce:** exactly the v1.0.x gate: below threshold = `failure`, service
+  error = `error`, unavailable = `pending`.
+- The `passed` output is unchanged in both modes: `true` only for a
+  server-verified pass. New `mode` output.
+- An invalid `mode` is a configuration error, reported as enforce (never
+  silently advisory).
+- **Behaviour change for `@v1` users:** a below-threshold PR is now green unless
+  you set `mode: enforce`. If you rely on TR blocking merges, add it.
+
 # v1.0.2
 
 - Node 24 runtime and CI.

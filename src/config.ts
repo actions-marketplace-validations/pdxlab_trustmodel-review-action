@@ -1,16 +1,22 @@
 import { readFileSync, existsSync } from 'fs';
 import * as yaml from 'js-yaml';
 
+export type ReviewMode = 'advisory' | 'enforce';
+export const REVIEW_MODES: readonly ReviewMode[] = ['advisory', 'enforce'];
+
 export interface Config {
   apiKey: string;
   threshold: number;
+  // TRUS-2595: advisory (default) reports the score without blocking a merge;
+  // enforce makes a below-threshold or unscored PR a failing commit status.
+  mode: ReviewMode;
   framework?: string;
   detectPatterns: string[];
   baseUrl: string;
 }
 
-export async function readTrustmodelConfig(overrides: Omit<Config, 'threshold'> & { threshold?: number }): Promise<Config> {
-  let doc: { detect?: unknown; eval?: { threshold?: unknown; framework?: unknown } } = {};
+export async function readTrustmodelConfig(overrides: Omit<Config, 'threshold' | 'mode'> & { threshold?: number; mode?: string }): Promise<Config> {
+  let doc: { detect?: unknown; eval?: { threshold?: unknown; framework?: unknown; mode?: unknown } } = {};
   if (existsSync('.trustmodel.yml')) {
     const raw = readFileSync('.trustmodel.yml', 'utf8');
     if (Buffer.byteLength(raw) > 65536) throw new Error('Trust Review configuration is too large.');
@@ -33,7 +39,13 @@ export async function readTrustmodelConfig(overrides: Omit<Config, 'threshold'> 
       || (base.protocol !== 'https:' && !(base.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)))) {
     throw new Error('base_url must be an HTTPS gateway origin (HTTP is supported only for localhost tests).');
   }
+  // Input wins, then .trustmodel.yml, then advisory. The input default is empty
+  // so the file can take effect (an input default would always win).
+  const mode = overrides.mode || doc.eval?.mode || 'advisory';
+  if (typeof mode !== 'string' || !(REVIEW_MODES as readonly string[]).includes(mode)) {
+    throw new Error('mode must be advisory or enforce.');
+  }
   const framework = overrides.framework || doc.eval?.framework;
   if (framework !== undefined && (typeof framework !== 'string' || framework.length > 64)) throw new Error('Invalid framework.');
-  return { ...overrides, baseUrl: base.origin, threshold, framework, detectPatterns };
+  return { ...overrides, baseUrl: base.origin, threshold, framework, detectPatterns, mode: mode as ReviewMode };
 }
