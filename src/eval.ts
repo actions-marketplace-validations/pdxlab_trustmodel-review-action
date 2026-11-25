@@ -39,6 +39,13 @@ export function parseResult(data: unknown): EvalResult {
       && typeof d.trust_score === 'number' && Number.isFinite(d.trust_score) && d.trust_score >= 0 && d.trust_score <= 100)) {
     throw new Error('Unverified or inconsistent passing result rejected.');
   }
+  // TRUS-2605: the gateway found no AI-related file among the submitted paths, so
+  // there was nothing to score. Treat it exactly like this Action's own no-AI skip
+  // (success status, no comment). Only the reason code is used, never server text,
+  // and only for an unevaluated, non-passing not_available answer.
+  if (d.status === 'not_available' && d.reason === 'no_ai_changes' && d.passed === false && d.pr_diff_evaluated === false) {
+    return { ...skipped(), runId: typeof d.run_id === 'string' ? d.run_id : undefined };
+  }
   return {
     status: d.status as EvalStatus, passed: d.passed, prDiffEvaluated: d.pr_diff_evaluated,
     trustScore: d.pr_diff_evaluated && typeof d.trust_score === 'number' ? d.trust_score : null,
