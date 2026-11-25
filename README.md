@@ -52,9 +52,11 @@ jobs:
           threshold: 70
 ```
 
-Then make `trustmodel/trust-review` a **required status check** in **Settings → Branches → Branch protection rules**.
+That's it. TR scores every AI-related PR and posts the TrustScore as a PR comment and a `trustmodel/trust-review` status.
 
-That's it. TR will score every AI-related PR and block merges below your threshold.
+**Advisory by default.** Out of the box TR never blocks a merge: a score below your threshold (or a review that could not run) is posted, clearly labelled "Advisory, not enforced", with a green status. The `passed` output stays `false` unless the PR really passed, so a deploy step gated on it still stops.
+
+**To gate merges**, add `mode: enforce` (or `eval: { mode: enforce }` in `.trustmodel.yml`), then make `trustmodel/trust-review` a **required status check** in **Settings → Branches → Branch protection rules**. In enforce mode a below-threshold score fails the status, a service error is an error status, and an unavailable review stays pending.
 
 ---
 
