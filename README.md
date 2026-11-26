@@ -216,6 +216,48 @@ eval:
 | `framework` | No | all dimensions | Compliance framework to evaluate against (see table above). |
 | `detect` | No | AI defaults | Comma-separated glob patterns to override AI-file detection. |
 | `github_token` | No | `${{ github.token }}` | Used only to post PR comments and commit statuses. Never sent to TrustModel. |
+| `sarif_file` | No | off | Relative path ending in `.sarif` to write a SARIF 2.1.0 file for Code Scanning. See below. |
+
+---
+
+## Code Scanning (SARIF)
+
+Off by default. Set `sarif_file`, then upload the file with GitHub's own `upload-sarif` action:
+
+```yaml
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+  statuses: write
+  security-events: write   # only needed for the upload step
+
+steps:
+  - uses: pdxlab/trustmodel-review-action@v1
+    id: tr
+    with:
+      api_key: ${{ secrets.TRUSTMODEL_API_KEY }}
+      sarif_file: trust-review.sarif
+  - uses: github/codeql-action/upload-sarif@v3
+    if: steps.tr.outputs.sarif_file != ''
+    with:
+      sarif_file: ${{ steps.tr.outputs.sarif_file }}
+      category: trustmodel-review
+```
+
+What it reports:
+
+| Result | Code Scanning |
+|--------|---------------|
+| Score below threshold | `trustmodel/trust-score-below-threshold`: `error` in enforce mode, `warning` in advisory |
+| Passed, but a dimension clearly below threshold | `trustmodel/weak-dimension`, `note` |
+| Passed cleanly, or no AI files changed | Empty file, so earlier alerts close |
+| Unscored, unavailable or service error | No file written (`sarif_file` output is empty) |
+
+- Findings are **file-level** (line 1) on the AI files that were scored. The score covers the whole change, so TR does not claim a specific line.
+- A dimension is flagged only when its confidence band stays below the threshold (judge noise is not reported).
+- The website score is never a code finding. The file holds only paths, scores and the threshold; no source content.
+- Code Scanning on private repositories requires GitHub Advanced Security.
 
 ---
 

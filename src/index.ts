@@ -5,6 +5,7 @@ import { runEval, EvalResult, verifiedPass, evaluationError, skipped, ReviewApiE
 import { publishResult } from './comment';
 import { readTrustmodelConfig, ReviewMode } from './config';
 import { normalizeWebsiteDomain, scanWebsite, WebsiteResult } from './website';
+import { buildSarif, resolveSarifPath, scoredFiles, writeSarif } from './sarif';
 
 export async function run(): Promise<void> {
   const ctx = github.context;
@@ -28,6 +29,8 @@ export async function run(): Promise<void> {
   // Fail safe: until the configuration has been read and validated, a
   // problem is reported as enforce (a visible failure), never as advisory.
   let mode: ReviewMode = 'enforce';
+  let changedFiles: string[] = [];
+  let threshold = 65;
   try {
     const input = core.getInput('threshold');
     if (input && !/^[0-9]+$/.test(input)) throw new Error('Invalid threshold.');
@@ -35,8 +38,9 @@ export async function run(): Promise<void> {
       framework: core.getInput('framework') || undefined, detectPatterns: core.getInput('detect').split(',').map(s => s.trim()).filter(Boolean),
       baseUrl: core.getInput('base_url') || 'https://api.trustmodel.ai', mode: core.getInput('mode') || undefined });
     mode = cfg.mode;
+    threshold = cfg.threshold;
     core.info(`Trust Review mode: ${mode}.`);
-    const changedFiles = await detectAiChanges({ baseSha: pr.base.sha, headSha: pr.head.sha, patterns: cfg.detectPatterns });
+    changedFiles = await detectAiChanges({ baseSha: pr.base.sha, headSha: pr.head.sha, patterns: cfg.detectPatterns });
     core.info(`Detected ${changedFiles.length} matching file path(s). Source content is never read or uploaded.`);
     if (!changedFiles.length) {
       result = skipped();
@@ -65,6 +69,27 @@ export async function run(): Promise<void> {
   core.setOutput('pr_diff_evaluated', String(result.prDiffEvaluated));
   core.setOutput('trust_score', result.trustScore === null ? '' : String(result.trustScore));
   core.setOutput('report_url', result.reportUrl ?? '');
+  // TRUS-2596: opt-in SARIF for Code Scanning. Reporting only: it can never
+  // change the commit status, the comment or the `passed` output.
+  let sarifFile = '';
+  const sarifInput = core.getInput('sarif_file');
+  if (sarifInput) {
+    try {
+      const workspace = process.cwd();
+      const target = resolveSarifPath(sarifInput, workspace);
+      const sarif = buildSarif({ result, files: scoredFiles(changedFiles, workspace), mode, threshold });
+      if (sarif) {
+        writeSarif(target, sarif, workspace);
+        sarifFile = sarifInput;
+        core.info(`Wrote SARIF to ${sarifInput}.`);
+      } else {
+        core.info('No SARIF written: this run has no scored Trust Review result to report.');
+      }
+    } catch {
+      core.warning('SARIF was not written; check the sarif_file input. The Trust Review result is unchanged.');
+    }
+  }
+  core.setOutput('sarif_file', sarifFile);
   try {
     if (!githubToken) throw new Error('missing GitHub credential');
     await publishResult({ octokit: github.getOctokit(githubToken), owner: ctx.repo.owner, repo: ctx.repo.repo,

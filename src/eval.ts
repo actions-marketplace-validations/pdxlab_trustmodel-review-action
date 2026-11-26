@@ -10,6 +10,24 @@ export interface EvalResult {
   message: string;
   reportUrl?: string;
   runId?: string;
+  // TRUS-2596: only for an evaluated result. The threshold the server applied
+  // and its per-dimension scores (dimension_variance), used for SARIF output.
+  threshold?: number;
+  dimensions?: DimensionScore[];
+}
+export interface DimensionScore { name: string; score: number; ciHigh: number | null }
+const isScore = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
+// Extra detail, never a gate input: a malformed entry is dropped, never an error.
+export function parseDimensions(raw: unknown): DimensionScore[] {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return [];
+  return Object.entries(raw as Record<string, unknown>)
+    .filter(([name, v]) => /^[a-z][a-z0-9_]{0,39}$/.test(name) && !!v && typeof v === 'object' && isScore((v as Record<string, unknown>).score))
+    .slice(0, 20)
+    .map(([name, v]) => {
+      const { score, ci_high: ciHigh } = v as Record<string, unknown>;
+      return { name, score: score as number, ciHigh: isScore(ciHigh) ? ciHigh : null };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 export const unavailable = (message = 'PR diff evaluation is not available. No code was evaluated.'): EvalResult => ({
   status: 'not_available', passed: false, prDiffEvaluated: false, trustScore: null, grade: null, message,
@@ -53,6 +71,10 @@ export function parseResult(data: unknown): EvalResult {
     message: d.status === 'not_available' ? unavailable().message : d.status === 'error' ? evaluationError().message : 'PR diff evaluation completed.',
     reportUrl: typeof d.report_url === 'string' && /^https:\/\//.test(d.report_url) ? d.report_url : undefined,
     runId: typeof d.run_id === 'string' ? d.run_id : undefined,
+    ...(d.pr_diff_evaluated ? {
+      threshold: Number.isInteger(d.threshold) && (d.threshold as number) >= 1 && (d.threshold as number) <= 100 ? d.threshold as number : undefined,
+      dimensions: parseDimensions(d.dimension_variance),
+    } : {}),
   };
 }
 

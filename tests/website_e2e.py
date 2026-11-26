@@ -33,6 +33,12 @@ def main():
                 data = {'status': 'not_available', 'passed': False, 'pr_diff_evaluated': False,
                         'trust_score': None, 'message': 'No code was evaluated. No passing gate was issued.'}
                 status = 201
+                if state.get('scored'):
+                    # TRUS-2596: an evaluated below-threshold result with per-dimension scores.
+                    data = {'status': 'failed', 'passed': False, 'pr_diff_evaluated': True, 'trust_score': 52,
+                            'grade': 'D', 'threshold': 65, 'run_id': '12345678-1234-1234-1234-123456789abc',
+                            'dimension_variance': {'safety': {'score': 40, 'ci_high': None},
+                                                   'fairness': {'score': 90, 'ci_high': None}}}
                 if state['wrong_key']:
                     status = 401
                     data = {'detail': 'UPSTREAM_SECRET_SENTINEL_NEVER_LOG'}
@@ -52,7 +58,7 @@ def main():
                 elif '/comments' in self.path and self.command == 'GET':
                     data = []
                 elif '/comments' in self.path:
-                    assert 'Trust Review — not available' in body['body']
+                    assert ('Trust Review — not passed' if state.get('scored') else 'Trust Review — not available') in body['body']
                     if state['website']:
                         assert 'Website TrustScore — informational' in body['body']
                         assert '**100/100**' in body['body']
@@ -182,6 +188,40 @@ def main():
             assert advisory.returncode == 0, advisory.stdout + advisory.stderr
             assert 'Trust Review mode: advisory.' in advisory.stdout
             assert '"status":"not_available","passed":false' in advisory.stdout
+            assert not (work / 'tr.sarif').exists()
+            # TRUS-2596: SARIF is opt-in. An unscored review writes no file and an
+            # empty output; the review result is never changed by it.
+            outputs = work / 'outputs.txt'
+            env['GITHUB_OUTPUT'] = str(outputs)
+            env['INPUT_SARIF_FILE'] = 'tr.sarif'
+            outputs.write_text('')
+            unscored = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                      capture_output=True, text=True, timeout=40)
+            assert unscored.returncode == 0, unscored.stdout + unscored.stderr
+            assert not (work / 'tr.sarif').exists()
+            assert 'No SARIF written' in unscored.stdout
+            # A scored below-threshold review writes a file-level finding on the AI file.
+            state['scored'] = True
+            outputs.write_text('')
+            sarif_run = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                       capture_output=True, text=True, timeout=40)
+            assert sarif_run.returncode == 0, sarif_run.stdout + sarif_run.stderr
+            assert 'sarif_file<<' in outputs.read_text() and '\ntr.sarif\n' in outputs.read_text()
+            assert 'passed<<' in outputs.read_text() and '\nfalse\n' in outputs.read_text()
+            sarif = json.loads((work / 'tr.sarif').read_text())
+            results = sarif['runs'][0]['results']
+            assert [r['locations'][0]['physicalLocation']['artifactLocation']['uri'] for r in results] == ['agents/run.py']
+            assert results[0]['level'] == 'warning' and 'safety 40/100' in results[0]['message']['text']
+            assert 'SOURCE_SENTINEL' not in (work / 'tr.sarif').read_text()
+            # A bad path never breaks the review: a warning, no file, empty output.
+            env['INPUT_SARIF_FILE'] = '../escape.sarif'
+            outputs.write_text('')
+            bad = subprocess.run(['node', str(root / 'dist/index.js')], cwd=work, env=env,
+                                 capture_output=True, text=True, timeout=40)
+            assert bad.returncode == 0, bad.stdout + bad.stderr
+            assert 'SARIF was not written' in bad.stdout
+            assert not (work.parent / 'escape.sarif').exists()
+            print('PASS: SARIF is opt-in, written only for a scored review, path-confined, and never changes the result.')
             print('PASS: built Action matrix: AI/no key/wrong key/non-AI skip; no false passed or duplicate failed job.')
             print('PASS: advisory default publishes a labelled non-blocking status; passed stays false.')
             print('PASS: built Action and actual runner show website score 100 as informational; unavailable PR gates remain pending, never passed.')
