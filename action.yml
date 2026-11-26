@@ -38,6 +38,10 @@ inputs:
     description: 'Optional explicit public domain for an informational website TrustScore. Never affects PR evaluation or its gate. Blank disables scanning.'
     required: false
     default: ''
+  sarif_file:
+    description: 'Optional relative path (ending in .sarif) to write a SARIF 2.1.0 file for GitHub Code Scanning; upload it with github/codeql-action/upload-sarif. Blank (default) writes nothing.'
+    required: false
+    default: ''
 outputs:
   website_domain:
     description: 'Explicit domain assessed separately from the PR.'
@@ -57,6 +61,8 @@ outputs:
     description: 'Empty unless the server evaluated the PR diff.'
   report_url:
     description: 'Optional verified evaluation report.'
+  sarif_file:
+    description: 'Path of the SARIF file written this run; empty when sarif_file is off or there was no scored result to report.'
 
 runs:
   using: 'node24'

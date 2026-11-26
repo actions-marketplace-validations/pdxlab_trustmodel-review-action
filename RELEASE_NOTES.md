@@ -1,3 +1,16 @@
+# v1.2.0 — SARIF output for GitHub Code Scanning (TRUS-2596)
+
+- New optional `sarif_file` input (off by default) writes a SARIF 2.1.0 file,
+  and a `sarif_file` output gives its path. Upload it with
+  `github/codeql-action/upload-sarif` (see README, "Code Scanning (SARIF)").
+- Below threshold: an `error` in enforce mode, a `warning` in advisory. A pass
+  with a dimension clearly below threshold: a `note`. Clean pass or no AI
+  files: an empty file, so earlier alerts close. Unscored or error: no file.
+- Findings are file-level on the scored AI files (the score covers the whole
+  change). Dimensions within judge noise are not reported. Website scores are
+  never findings. The SARIF step never changes the status, comment or `passed`.
+- No new dependencies and no workflow artifact.
+
 # v1.1.1 — "no AI files changed" is a quiet skip (TRUS-2605)
 
 - When the gateway reports that none of the submitted paths are AI-related
