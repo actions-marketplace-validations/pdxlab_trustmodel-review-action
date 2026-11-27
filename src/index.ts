@@ -1,7 +1,7 @@
 import * as core from '@actions/core';
 import * as github from '@actions/github';
 import { detectAiChanges } from './detector';
-import { runEval, EvalResult, verifiedPass, evaluationError, skipped, ReviewApiError } from './eval';
+import { runEval, EvalResult, verifiedPass, notRun, skipped, ReviewApiError } from './eval';
 import { publishResult } from './comment';
 import { readTrustmodelConfig, ReviewMode } from './config';
 import { normalizeWebsiteDomain, scanWebsite, WebsiteResult } from './website';
@@ -53,7 +53,7 @@ export async function run(): Promise<void> {
   } catch (error) {
     // Do not echo upstream error text or substitute a website scan.
     if (error instanceof ReviewApiError) httpStatus = error.httpStatus;
-    result = evaluationError();
+    result = error instanceof ReviewApiError ? notRun(error.reason, error.runId) : notRun('service_error');
   }
   core.info(`Trust Review response: ${JSON.stringify({ status: result.status, passed: verifiedPass(result),
     pr_diff_evaluated: result.prDiffEvaluated, trust_score: result.trustScore,

@@ -270,6 +270,21 @@ What it reports:
 | AI files changed, score < threshold | `failure` | `false` | Merge blocked; PR comment shows per-dimension breakdown |
 | Evaluator unavailable / no key | `pending` | `false` | Make the check optional to avoid blocking on this |
 | Service error | `error` | `false` | Never fails open — a service error does not grant a pass |
+| Not run (out of credits, daily limit, API key rejected, too many requests) | `error` | `false` | PR comment says why and what to do (see below) |
+
+In advisory mode (the default) every row except a verified pass publishes `success`, labelled "Advisory, not enforced", so nothing blocks a merge.
+
+### When Trust Review does not run
+
+The PR comment heading says why, and the comment says what to do. It never shows server text.
+
+| Heading | Cause | What to do |
+|---------|-------|------------|
+| `not run: out of credits` | The organization has used today's free runs and does not have enough credits | Add credits in the TrustModel console (Billing), then re-run. Free runs reset at 00:00 UTC |
+| `not run: daily limit reached` | The organization reached today's Trust Review limit | Re-run after 00:00 UTC |
+| `not run: too many requests` | Too many requests in a short time | Re-run in a minute |
+| `not run: API key rejected` | The key in `api_key` is wrong, disabled or expired | Update the `TRUSTMODEL_API_KEY` secret |
+| `not run: evaluation failed` / `service error` | Trust Review could not finish | Re-run the workflow |
 
 The commit status (`trustmodel/trust-review`) is the merge gate — not the Action job exit code. A green Action job with a pending or failed commit status still blocks the merge if the check is required.
 
