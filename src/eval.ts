@@ -14,7 +14,12 @@ export interface EvalResult {
   // and its per-dimension scores (dimension_variance), used for SARIF output.
   threshold?: number;
   dimensions?: DimensionScore[];
+  // Why nothing was scored, when the Action knows. Chosen only from status
+  // codes and reason codes, never from server text (see comment.ts).
+  reason?: NotRunReason;
 }
+export type NotRunReason = 'insufficient_credits' | 'daily_limit' | 'rate_limited' | 'api_key_rejected'
+  | 'service_error' | 'evaluation_error';
 export interface DimensionScore { name: string; score: number; ciHigh: number | null }
 const isScore = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 100;
 // Extra detail, never a gate input: a malformed entry is dropped, never an error.
@@ -33,6 +38,22 @@ export const unavailable = (message = 'PR diff evaluation is not available. No c
   status: 'not_available', passed: false, prDiffEvaluated: false, trustScore: null, grade: null, message,
 });
 export const evaluationError = (): EvalResult => ({ ...unavailable('Trust Review service could not complete the request. No passing gate was issued.'), status: 'error' });
+// An error result that says why. Same gate as any error: never a pass.
+export const notRun = (reason: NotRunReason, runId?: string): EvalResult => ({ ...evaluationError(), reason, runId });
+// Why a non-2xx answer means nothing was scored: out of credits (402), daily
+// limit or plain throttling (429), a rejected key (401/403), else a service
+// error. Only the status and the reason code are read; server text never is.
+const REFUSAL_CODES: Record<string, NotRunReason> = { insufficient_credits: 'insufficient_credits', tr_daily_limit_reached: 'daily_limit' };
+async function refusal(response: Response): Promise<never> {
+  const status = response.status;
+  if (status === 401 || status === 403) throw new ReviewApiError(status, 'api_key_rejected');
+  if (status !== 402 && status !== 429) throw new ReviewApiError(status, 'service_error');
+  let body: Record<string, unknown> = {};
+  try { body = await response.json() as Record<string, unknown>; } catch { /* no usable body */ }
+  const runId = typeof body.run_id === 'string' && /^[0-9a-f-]{36}$/i.test(body.run_id) ? body.run_id : undefined;
+  const reason = typeof body.code === 'string' ? REFUSAL_CODES[body.code] : undefined;
+  throw new ReviewApiError(status, reason ?? (status === 429 ? 'rate_limited' : 'service_error'), runId);
+}
 export const verifiedPass = (r: EvalResult): boolean => r.status === 'passed' && r.passed === true && r.prDiffEvaluated === true;
 export const skipped = (): EvalResult => ({ ...unavailable('No AI-related files changed; review skipped. No code was evaluated.'), status: 'skipped' });
 export function commitState(r: EvalResult, mode: ReviewMode = 'enforce'): 'success' | 'pending' | 'failure' | 'error' {
@@ -44,7 +65,9 @@ export function commitState(r: EvalResult, mode: ReviewMode = 'enforce'): 'succe
   return r.status === 'failed' && r.prDiffEvaluated ? 'failure' : 'error';
 }
 export class ReviewApiError extends Error {
-  constructor(readonly httpStatus: number) { super(`Trust Review API returned HTTP ${httpStatus}.`); }
+  constructor(readonly httpStatus: number, readonly reason: NotRunReason = 'service_error', readonly runId?: string) {
+    super(`Trust Review API returned HTTP ${httpStatus}.`);
+  }
 }
 
 export function parseResult(data: unknown): EvalResult {
@@ -71,6 +94,7 @@ export function parseResult(data: unknown): EvalResult {
     message: d.status === 'not_available' ? unavailable().message : d.status === 'error' ? evaluationError().message : 'PR diff evaluation completed.',
     reportUrl: typeof d.report_url === 'string' && /^https:\/\//.test(d.report_url) ? d.report_url : undefined,
     runId: typeof d.run_id === 'string' ? d.run_id : undefined,
+    ...(d.status === 'error' ? { reason: 'evaluation_error' as const } : {}),
     ...(d.pr_diff_evaluated ? {
       threshold: Number.isInteger(d.threshold) && (d.threshold as number) >= 1 && (d.threshold as number) <= 100 ? d.threshold as number : undefined,
       dimensions: parseDimensions(d.dimension_variance),
@@ -93,7 +117,7 @@ export async function runEval(opts: RunEvalOpts): Promise<EvalResult> {
                            changed_files: opts.changedFiles, threshold: opts.cfg.threshold, framework: opts.cfg.framework ?? '' }),
     signal: AbortSignal.timeout(Math.max(1, Math.min(30_000, deadline - Date.now()))),
   });
-  if (!response.ok) throw new ReviewApiError(response.status);
+  if (!response.ok) await refusal(response);
   let data = await response.json() as Record<string, unknown>;
   const runId = data.run_id;
   while (data.status === 'running' || data.status === 'pending') {
@@ -105,7 +129,7 @@ export async function runEval(opts: RunEvalOpts): Promise<EvalResult> {
     const poll = await transport(`${opts.cfg.baseUrl}/v1/pr-trust/review/${runId}/`, {
       headers: { 'X-API-Key': opts.cfg.apiKey }, signal: AbortSignal.timeout(Math.max(1, Math.min(10_000, deadline - Date.now()))),
     });
-    if (!poll.ok) throw new ReviewApiError(poll.status);
+    if (!poll.ok) await refusal(poll);
     data = await poll.json() as Record<string, unknown>;
   }
   return parseResult(data);

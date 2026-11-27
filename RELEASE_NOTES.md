@@ -1,3 +1,14 @@
+# v1.2.1 — the PR says why Trust Review did not run (TRUS-2593)
+
+- When Trust Review cannot score a PR, the comment heading and commit status now
+  say why: out of credits (402 `insufficient_credits`), daily limit reached (429
+  `tr_daily_limit_reached`), too many requests (429), API key rejected (401/403),
+  evaluation failed, or service error. Each comes with what to do next.
+  Previously every one of these read as "evaluator not available" or "service error".
+- Chosen from the HTTP status and reason code only; server text is never shown.
+- Gate unchanged: each is an `error` result, never a pass. Advisory mode stays
+  green; enforce mode shows `error`.
+
 # v1.2.0 — SARIF output for GitHub Code Scanning (TRUS-2596)
 
 - New optional `sarif_file` input (off by default) writes a SARIF 2.1.0 file,

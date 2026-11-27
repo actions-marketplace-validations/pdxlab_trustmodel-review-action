@@ -306,3 +306,65 @@ test('server message text is never shown for no_ai_changes', () => {
   const r=noAi({message:'<script>SERVER_TEXT_SENTINEL</script>'});
   assert.doesNotMatch(r.message,/SERVER_TEXT_SENTINEL/);
 });
+
+// TRUS-2593: every reason Trust Review did not score a PR is explained on the PR,
+// from the status and reason code only, never from server text.
+const { notRun, ReviewApiError } = require('../dist_ts/eval.js');
+const RUN = '12345678-1234-1234-1234-123456789abc';
+const SECRET = 'SERVER_TEXT_MUST_NOT_REACH_THE_PR';
+const refusalCases = [
+  [402, {code:'insufficient_credits', detail:SECRET, run_id:RUN}, 'insufficient_credits', /not run: out of credits/, /Add credits in the TrustModel console/],
+  [429, {code:'tr_daily_limit_reached', detail:SECRET, run_id:RUN}, 'daily_limit', /not run: daily limit reached/, /00:00 UTC/],
+  [429, {detail:SECRET}, 'rate_limited', /not run: too many requests/, /Re-run this workflow in a minute/],
+  [401, {detail:SECRET}, 'api_key_rejected', /not run: API key rejected/, /TRUSTMODEL_API_KEY/],
+  [403, {detail:SECRET}, 'api_key_rejected', /not run: API key rejected/, /api_key/],
+  [402, {code:'something_else', detail:SECRET}, 'service_error', /not run: service error/, /Re-run this workflow/],
+  [500, {detail:SECRET}, 'service_error', /not run: service error/, /Re-run this workflow/],
+];
+for (const [status, body, reason, heading, next] of refusalCases) {
+  test(`HTTP ${status} ${body.code ?? ''} is explained on the PR as ${reason}`, async () => {
+    const error = await runEval({...opts, transport: async () => json(body, status)}).then(() => null, e => e);
+    assert.ok(error instanceof ReviewApiError);
+    assert.equal(error.httpStatus, status);
+    assert.equal(error.reason, reason);
+    const result = notRun(error.reason, error.runId);
+    assert.equal(result.status, 'error');
+    assert.equal(verifiedPass(result), false);
+    for (const mode of ['advisory', 'enforce']) {
+      const comment = buildComment(result, undefined, mode);
+      assert.match(comment, heading);
+      assert.match(comment, next);
+      assert.match(comment, /No code was evaluated and no passing gate was issued/);
+      assert.doesNotMatch(comment, new RegExp(SECRET));
+      assert.doesNotMatch(statusDescription(result, mode), new RegExp(SECRET));
+      assert.ok(statusDescription(result, mode).length <= 140);
+    }
+    assert.equal(commitState(result, 'advisory'), 'success');
+    assert.equal(commitState(result, 'enforce'), 'error');
+  });
+}
+
+test('out of credits keeps the run id and says so in the status', async () => {
+  const error = await runEval({...opts, transport: async () => json({code:'insufficient_credits', run_id:RUN}, 402)}).then(() => null, e => e);
+  assert.equal(error.runId, RUN);
+  assert.match(statusDescription(notRun(error.reason), 'advisory'), /^Advisory, not enforced: TR: Not run, out of credits/);
+});
+
+test('a refusal while polling is explained the same way', async () => {
+  let calls = 0;
+  const error = await runEval({...opts, pollIntervalMs: 1, transport: async () => {
+    calls++;
+    return calls === 1 ? json({...na, status:'running', run_id:RUN}, 201) : json({code:'tr_daily_limit_reached'}, 429);
+  }}).then(() => null, e => e);
+  assert.equal(error.reason, 'daily_limit');
+});
+
+test('an evaluation that errored on the server says it failed, not unavailable', () => {
+  const result = parseResult({status:'error', passed:false, pr_diff_evaluated:false, trust_score:null, run_id:RUN});
+  assert.equal(result.reason, 'evaluation_error');
+  assert.match(buildComment(result), /not run: evaluation failed/);
+});
+
+test('an unavailable evaluator keeps its original comment', () => {
+  assert.match(buildComment(unavailable()), /Trust Review — not available/);
+});
