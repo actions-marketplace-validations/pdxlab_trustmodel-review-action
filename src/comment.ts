@@ -1,5 +1,5 @@
 import * as github from '@actions/github';
-import { EvalResult, verifiedPass, commitState } from './eval';
+import { EvalResult, NotRunReason, verifiedPass, commitState } from './eval';
 import { ReviewMode } from './config';
 import { WebsiteResult, websiteComment } from './website';
 export const MARKER = '<!-- trustmodel-trust-review -->';
@@ -9,8 +9,56 @@ type Octokit = ReturnType<typeof github.getOctokit>;
 // green advisory status is never read as a passed review.
 export const ADVISORY_NOTE = '_Advisory mode: this result does not block the merge. Set `mode: enforce` to gate merges on it._';
 
+// Why Trust Review did not score this PR, in fixed text: the heading, what
+// happened, what the user can do, and the short commit-status form.
+const NOT_RUN: Record<NotRunReason, { title: string; what: string; next: string; status: string }> = {
+  insufficient_credits: {
+    title: 'not run: out of credits',
+    what: 'Your TrustModel organization has used today\'s free Trust Review runs and does not have enough credits for another review.',
+    next: 'Add credits in the TrustModel console (Billing), then re-run this workflow. Free runs reset daily at 00:00 UTC.',
+    status: 'TR: Not run, out of credits. Add credits in the TrustModel console',
+  },
+  daily_limit: {
+    title: 'not run: daily limit reached',
+    what: 'Your TrustModel organization reached today\'s Trust Review limit.',
+    next: 'Reviews resume at 00:00 UTC; re-run this workflow then.',
+    status: 'TR: Not run, daily review limit reached. Resumes 00:00 UTC',
+  },
+  rate_limited: {
+    title: 'not run: too many requests',
+    what: 'Trust Review received too many requests in a short time.',
+    next: 'Re-run this workflow in a minute.',
+    status: 'TR: Not run, too many requests. Re-run shortly',
+  },
+  api_key_rejected: {
+    title: 'not run: API key rejected',
+    what: 'TrustModel did not accept the API key passed to the `api_key` input.',
+    next: 'Check that the repository secret (for example `TRUSTMODEL_API_KEY`) holds a current key that is not disabled or expired.',
+    status: 'TR: Not run, API key rejected. Check the api_key secret',
+  },
+  service_error: {
+    title: 'not run: service error',
+    what: 'The Trust Review service could not complete the request.',
+    next: 'Re-run this workflow to try again.',
+    status: 'Trust Review service error; no passing gate issued',
+  },
+  evaluation_error: {
+    title: 'not run: evaluation failed',
+    what: 'Trust Review started but could not finish scoring this PR.',
+    next: 'Re-run this workflow to try again.',
+    status: 'Trust Review service error; no passing gate issued',
+  },
+};
+
 function prComment(result: EvalResult, mode: ReviewMode): string {
   const advisory = mode === 'advisory' && !verifiedPass(result) ? ['', ADVISORY_NOTE] : [];
+  const notRun = !result.prDiffEvaluated && result.reason ? NOT_RUN[result.reason] : undefined;
+  if (notRun) return [
+    MARKER, `## Trust Review — ${notRun.title}`, '',
+    `${notRun.what} **No code was evaluated and no passing gate was issued.**`, '',
+    notRun.next,
+    ...advisory,
+  ].join('\n');
   if (!result.prDiffEvaluated) return [
     MARKER, '## Trust Review — not available', '',
     'The PR diff evaluator is not available. **No code was evaluated and no passing gate was issued.**', '',
@@ -28,6 +76,7 @@ export function buildComment(result: EvalResult, website?: WebsiteResult, mode: 
 
 export function statusDescription(result: EvalResult, mode: ReviewMode = 'enforce'): string {
   const base = result.status === 'skipped' ? 'TR: No AI-related files changed — skipped' :
+               !result.prDiffEvaluated && result.reason ? NOT_RUN[result.reason].status :
                result.status === 'not_available' ? 'TR: Evaluation unavailable; no passing gate issued' :
                result.status === 'error' ? 'Trust Review service error; no passing gate issued' :
                verifiedPass(result) ? 'Verified PR diff evaluation passed' : 'PR diff evaluation did not pass';

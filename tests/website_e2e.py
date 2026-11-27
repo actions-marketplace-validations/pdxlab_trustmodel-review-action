@@ -58,7 +58,10 @@ def main():
                 elif '/comments' in self.path and self.command == 'GET':
                     data = []
                 elif '/comments' in self.path:
-                    assert ('Trust Review — not passed' if state.get('scored') else 'Trust Review — not available') in body['body']
+                    expected = ('Trust Review — not passed' if state.get('scored') else
+                                'Trust Review — not run: API key rejected' if state['wrong_key'] else
+                                'Trust Review — not available')
+                    assert expected in body['body'], body['body']
                     if state['website']:
                         assert 'Website TrustScore — informational' in body['body']
                         assert '**100/100**' in body['body']
